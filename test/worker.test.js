@@ -34,17 +34,40 @@ test('no-check-needed inside growth gate; rechecks at 2x growth', () => {
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }).action, 'kept');
 });
 
-test('manual title is detected and never overwritten', () => {
-  const { worker, projectDir } = setup();
+// Protection is an explicit act now - the `manual` flag in state, set by `rename` or `protect`.
+// Nothing about a title record itself can turn it on.
+test('a session marked manual in state is never overwritten', () => {
+  const { worker, state, projectDir } = setup();
   const entries = [...chat(2), fx.titleEntry('My hand-written name')];
   const file = fx.writeTranscript(projectDir, 's1', entries);
+  const s = state.load();
+  state.session(s, 's1').manual = true;
+  state.save(s);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[X] Nope' }).action, 'manual-skip');
   // and it stays manual even at high growth
   const file2 = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('My hand-written name')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[X] Nope' }).action, 'manual-skip');
 });
 
-test('a custom-title we wrote ourselves is not treated as manual', () => {
+// The desktop app writes its own auto-titles as custom-title records, re-asserting the same string
+// every few turns, so a foreign custom-title says nothing about who wrote it. Treating one as a
+// human rename manual-locked nearly every session on first sight and killed drift re-titling.
+test('a foreign custom-title is drift-tracked, not manual-locked', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Spending analysis review')]);
+  // present and not vague: no first-title need, drift baseline set without an LLM call
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.manual, false);
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  // at 2x growth it gets re-checked like any other title, and a drifted session is re-titled
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.titleEntry('Spending analysis review')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[Emails] SES bounce triage' });
+  assert.equal(res.action, 'titled');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
+});
+
+test('our own title, read back as a custom-title, still drift-rechecks', () => {
   const { worker, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
@@ -160,7 +183,8 @@ test('recovers from a crash between the transcript record and the final save', (
   state.session(s, 's1').written.push('[Emails] SES triage');
   state.save(s);
   t.appendTitleRecord(file, 's1', '[Emails] SES triage');
-  // the claim is on record, so our own title never reads as a human's
+  // the claim is on record and survived the crash, so the title still reads as ours on the next
+  // run - the session picks up its drift baseline and carries on rather than starting over
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
   assert.equal(state.load().sessions.s1.manual, false);
 });
@@ -180,9 +204,9 @@ test('a dry run never writes state', () => {
   const { worker, projectDir } = setup();
   const stateFile = require('../src/paths').stateFile();
   const runner = () => '[X] Nope';
-  // human-titled session - would otherwise persist manual = true
+  // already-titled by a custom-title record - would otherwise persist the drift baseline
   const f1 = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('My hand-written name')]);
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: f1, dryRun: true, runner }).action, 'manual-skip');
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: f1, dryRun: true, runner }).action, 'no-check-needed');
   // already-titled session inside the gate - would otherwise persist the drift baseline
   const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.aiTitleEntry('Spending analysis review', 's2')]);
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: f2, dryRun: true, runner }).action, 'no-check-needed');
@@ -197,7 +221,8 @@ test('a dry run never writes state', () => {
 
 // `claude -p` blocks for up to 90 seconds. Another worker that finishes inside that window saves
 // state of its own, and a stale in-memory copy written afterwards erases it - including a `written`
-// claim, whose loss makes our own title read as a human's and marks that session manual forever.
+// claim. Lose that claim and our own title stops reading as ours: the app re-asserting it mid-
+// generate looks like a title someone else just set, and the re-title is abandoned for nothing.
 test('a concurrent state write during generation is not lost', () => {
   const { worker, state, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
@@ -254,9 +279,11 @@ test('a rename that lands mid-generate is not clobbered by the title we asked fo
   assert.equal(state.load().sessions.s1.manual, true);
 });
 
-// The transcript is the only signal when the rename came from the app rather than our own CLI:
-// no state write, just a custom-title record that wasn't there when we started.
-test('a foreign title appearing mid-generate is left alone and marks the session manual', () => {
+// A title that appeared while we were generating wins - ours would be appended after it and take
+// over a name the user may have just typed. It does not make the session manual: the appearing
+// title is just as likely the app re-asserting its own auto-title, so the next Stop event
+// re-evaluates it through the normal flow.
+test('a title appearing mid-generate is left alone without locking the session', () => {
   const { worker, state, projectDir } = setup();
   const t = require('../src/transcript');
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
@@ -264,11 +291,14 @@ test('a foreign title appearing mid-generate is left alone and marks the session
     t.appendTitleRecord(file, 's1', 'Renamed in the app');
     return '[Emails] SES triage';
   };
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'title-changed');
   assert.equal(t.currentTitle(t.readEntries(file)), 'Renamed in the app');
   assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
-  assert.equal(state.load().sessions.s1.manual, true);
-  assert.deepEqual(state.load().sessions.s1.written, []);
+  // nothing is recorded at all - no lock, and no claim on a title we never wrote
+  assert.equal(state.load().sessions.s1, undefined);
+  // the next event treats it as any other title: baseline set, no LLM call, still not manual
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call'); } }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.manual, false);
 });
 
 // The re-check must not fire on the title that was already there when we started - a session whose
@@ -280,6 +310,25 @@ test('the mid-generate re-check ignores the vague title the session started with
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
   assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES triage');
   assert.equal(state.load().sessions.s1.manual, false);
+});
+
+// The app re-asserts a title it already has by writing it again as a `custom-title` record, so the
+// same string can change record type under us mid-generate. An identical string is never a new
+// arrival, whatever record carries it - only a genuinely different title is.
+test('an ai-title re-asserted as an identical custom-title mid-generate is not a new arrival', () => {
+  const { worker, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('Spending analysis review')]);
+  // baseline set from the ai-title, no LLM call
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('Spending analysis review')]);
+  const runner = () => {
+    // the app re-asserts the same title it already showed, this time as a custom-title record
+    t.appendTitleRecord(file2, 's1', 'Spending analysis review');
+    return '[Emails] SES bounce triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
 });
 
 // The kept title is what the session is left with. A title that reads vague is not one, even when

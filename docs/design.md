@@ -16,7 +16,7 @@ A zero-dependency Node CLI plus a Claude Code Stop hook that keeps session title
 - Writes native `custom-title` records the Claude Code UI actually displays - no sidecar
 - Titles a session after the first real exchange, then re-titles when the conversation drifts
 - Backfills titles across all existing untitled/vague sessions
-- Manual rename, list, and search commands
+- Manual rename, protect, list, and search commands
 - No API key - titles are generated via `claude -p --model haiku` on the user's existing subscription
 
 MIT license. npm distribution now (`npm install -g claude-session-namer`, then `claude-session-namer install`), Claude Code plugin wrapper as a later phase. A global install rather than `npx`: the hook wrapper embeds the absolute path to the CLI, and an npx path points into a cache directory that gets pruned.
@@ -48,7 +48,11 @@ The worker owns all logic:
 
 - **First title:** when a session has at least one real user/assistant exchange and no non-vague title.
 - **Drift re-title (growth-gated):** re-check only when the session's user-turn count has grown ~2x since the last check. Calls scale with the log of session length - a 100-turn session gets roughly 5 checks lifetime. The check sends the current title plus a recent excerpt; the model answers `KEEP` or supplies a replacement.
-- **Manual titles are permanent.** Any `custom-title` record the tool didn't write itself is treated as manual and never overwritten. `rename` via the CLI marks the title manual in state. Known-vague titles ('New session', truncated first-message titles) are always fair game.
+- **Protection is explicit, never inferred from the record.** Live-data testing killed the original assumption here. The desktop app files its own auto-titles as `custom-title` records - the same record type a hand rename produces - and re-asserts the current title every ~14 transcript lines. On the author's machine, 68 of 69 titled sessions carried a `custom-title` and only one carried an `ai-title`. So the record type says nothing about who wrote the title, and treating a foreign `custom-title` as a human's manual-locked nearly every session on first sight, which is the one thing that defeats the whole tool. What protects a title instead:
+  - The drift check is KEEP-biased, and the prompt tells the model to output `KEEP` when the current title reads like a deliberate personal label (a person's name, a date, a note like 'Revisit Monday') rather than a description of the work.
+  - `rename` and `protect` set the manual flag in state. That is permanent until `unprotect`, and it is the only guarantee on offer.
+- **App auto-titles are replaceable, by design.** Replacing them is the product. Known-vague titles ('New session', truncated first-message titles) are fair game for the same reason.
+- **Live sessions adopt the newest title record.** The app does re-write the title into the transcript every few turns while a session is in use, but what it re-writes is whatever the last `custom-title` record says - it adopts, it doesn't displace (verified on live desktop data). So a re-title on a session still in use applies immediately and then gets echoed back by the app's own writes, which duplicate our string rather than compete with it; the `written` list in state already recognizes those echoes as ours. Backfill skips sessions touched in the last 10 minutes for an unrelated reason: those sessions have a Stop-hook worker of their own, and a sweep would race it.
 
 ### Title format
 
@@ -59,14 +63,16 @@ The worker owns all logic:
 - `install` / `uninstall` - register/remove the Stop hook in `~/.claude/settings.json` (surgical JSON edit, preserves everything else in the file)
 - `backfill [--dry-run] [--model <m>] [--project <path>]` - sweep every project dir under `~/.claude/projects/`, title all vague/untitled sessions; dry-run prints planned titles without writing; throttled to stay clear of rate limits
 - `rename <session-id> "title"` - set a title by hand, marked manual
-- `list [--project <path>]` - sessions with titles, newest first
+- `protect <session-id>` - mark a session manual without touching its title, so whatever it is named now stays
+- `unprotect <session-id>` - drop the manual mark and let drift re-titling resume
+- `list [--project <path>]` - sessions with titles, newest first; protected sessions carry a trailing `[protected]`
 - `search <query>` - match against titles and transcript content
 
 ## State
 
 `~/.claude/claude-session-namer/state.json`:
 
-- Per session: last-check user-turn count, titles written by the tool, manual flag
+- Per session: last-check user-turn count, titles written by the tool, manual flag (set only by `rename` and `protect`)
 - Global: seen prefixes with usage counts
 - Corrupt or missing state degrades gracefully - worst case a session is re-checked earlier than needed
 

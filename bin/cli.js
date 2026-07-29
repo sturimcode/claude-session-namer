@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'list', 'search', 'config'];
+const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config'];
 const cmd = process.argv[2];
 
 const help = `claude-session-namer - auto-title Claude Code sessions
@@ -11,6 +11,8 @@ Usage: claude-session-namer <command>
   backfill    Title all existing vague/untitled sessions (--dry-run, --model <m>, --project <path>)
               (--dry-run still calls the model per session)
   rename      Set a session title by hand: rename <session-id> "title"
+  protect     Keep a session's current title as it is: protect <session-id>
+  unprotect   Allow re-titling again: unprotect <session-id>
   list        List sessions with titles (--project <path>)
   search      Find sessions by title or content: search <query>
   config      Show or change settings: config [prefix on|off]

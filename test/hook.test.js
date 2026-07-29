@@ -162,5 +162,13 @@ test('readStdin releases the stream when the timeout fires', async () => {
   assert.ok(Date.now() - started < 1000, 'must resolve on the injected timeout, not hang');
   assert.equal(stream.listenerCount('data'), 0, 'data listener must be removed so the event loop can drain');
   assert.equal(stream.listenerCount('end'), 0);
-  assert.equal(stream.listenerCount('error'), 0);
+  // One no-op error listener stays behind on purpose: a stream with no error listener at all
+  // throws on a late EPIPE and takes the hook down after it has already done its job.
+  assert.equal(stream.listenerCount('error'), 1);
+});
+
+test('readStdin absorbs a stream error that arrives after it resolved', async () => {
+  const stream = new PassThrough();
+  assert.equal(await hook.readStdin(stream, 20), '');
+  assert.doesNotThrow(() => stream.emit('error', new Error('EPIPE')));
 });

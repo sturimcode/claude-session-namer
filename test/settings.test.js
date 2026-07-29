@@ -209,6 +209,25 @@ test('a hook path containing spaces is quoted in settings.json', () => {
   assert.ok(!fs.readFileSync(paths.settingsFile(), 'utf8').includes('claude-session-namer'), 'quoting must not break uninstall');
 });
 
+// A path with no whitespace still word-splits or expands if it carries a shell metacharacter -
+// $ is the common one (a directory named after a variable, a '$' in a username).
+test('a hook path containing a shell metacharacter is quoted and escaped', () => {
+  const dir = path.join(fx.tmpDir(), 'we$ird-config');
+  fs.mkdirSync(dir, { recursive: true });
+  const { settings, paths } = fresh(dir);
+  assert.ok(!/\s/.test(paths.hookScript()), 'this test is only meaningful without whitespace');
+
+  capture(() => settings.install());
+  const cmd = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop[0].hooks[0].command;
+  assert.equal(cmd, `"${paths.hookScript().split('$').join('\\$')}"`, 'an unescaped $ expands to nothing under sh');
+  assert.equal(spawnSync('sh', ['-c', `command -v ${cmd} >/dev/null`]).status, 0);
+
+  capture(() => settings.install());
+  assert.equal(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop.length, 1, 'escaping must not break idempotency');
+  capture(() => settings.uninstall());
+  assert.ok(!fs.readFileSync(paths.settingsFile(), 'utf8').includes('claude-session-namer'), 'escaping must not break uninstall');
+});
+
 test('install writes through a symlinked settings.json', () => {
   const { settings, paths } = fresh();
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
@@ -226,6 +245,65 @@ test('install writes through a symlinked settings.json', () => {
   capture(() => settings.uninstall());
   assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink());
   assert.ok(!fs.readFileSync(realFile, 'utf8').includes('claude-session-namer'));
+});
+
+// A dotfiles symlink whose target isn't checked out yet resolves to nothing. Writing to the link
+// path itself would replace the link with a regular file and cut the user loose from their repo.
+test('install writes through a settings.json symlink whose target does not exist yet', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  const realFile = path.join(fx.tmpDir(), 'dotfiles', 'settings.json');
+  fs.symlinkSync(realFile, paths.settingsFile());
+
+  capture(() => settings.install());
+  assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink(), 'a dangling link must not be replaced by a regular file');
+  const conf = JSON.parse(fs.readFileSync(realFile, 'utf8'));
+  assert.ok(JSON.stringify(conf.hooks.Stop).includes('claude-session-namer'), 'the link target must get the content');
+  assert.deepEqual(tmpLeftovers(path.dirname(realFile)), []);
+});
+
+test('a relative dangling symlink resolves against the link\'s own directory', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  fs.symlinkSync(path.join('dotfiles', 'settings.json'), paths.settingsFile());
+
+  capture(() => settings.install());
+  const target = path.join(paths.claudeDir(), 'dotfiles', 'settings.json');
+  assert.ok(fs.existsSync(target), 'a relative target resolves against the link dir, not the cwd');
+  assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink());
+});
+
+// The command string is what identifies our entry. Matching the whole stringified entry meant a
+// user's unrelated Stop hook that merely mentioned the tool anywhere got deleted on install.
+test('a foreign Stop entry that names the tool outside its command survives', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  const foreign = { name: 'runs alongside claude-session-namer', hooks: [{ type: 'command', command: 'other-tool' }] };
+  fs.writeFileSync(paths.settingsFile(), JSON.stringify({ hooks: { Stop: [structuredClone(foreign)] } }));
+
+  capture(() => settings.install());
+  const after = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'));
+  assert.equal(after.hooks.Stop.length, 2);
+  assert.deepEqual(after.hooks.Stop[0], foreign, 'only the command decides whose entry it is');
+
+  capture(() => settings.uninstall());
+  assert.deepEqual(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')), { hooks: { Stop: [foreign] } });
+});
+
+test('an entry left by an older install, at another path, is still replaced', () => {
+  const { settings } = fresh();
+  const old = { hooks: [{ type: 'command', command: '"/opt/old/claude-session-namer/hook.sh"', timeout: 15 }] };
+  const s = settings.addHook({ hooks: { Stop: [old] } }, '/new/claude-session-namer/hook.sh');
+  assert.equal(s.hooks.Stop.length, 1, 'a reinstall from a new path must not leave the old entry behind');
+  assert.equal(s.hooks.Stop[0].hooks[0].command, '/new/claude-session-namer/hook.sh');
+});
+
+test('a shape error names the offending type with the right article', () => {
+  const { settings } = fresh();
+  const cmd = '/x/claude-session-namer/hook.sh';
+  assert.throws(() => settings.addHook({ hooks: { Stop: {} } }, cmd), /is an object/);
+  assert.throws(() => settings.addHook({ hooks: [] }, cmd), /is an array/);
+  assert.throws(() => settings.addHook({ hooks: 'oops' }, cmd), /is a string/);
 });
 
 test('addHook refuses to edit a malformed hooks block', () => {
@@ -282,6 +360,19 @@ test('wrapper exits quietly when no node exists at hook time', () => {
   assert.equal(res.stderr, '', 'and must not print anything at every Stop');
 });
 
+// An nvm upgrade relocates global node_modules and the installed package moves out from under the
+// wrapper. Without a guard the hook prints MODULE_NOT_FOUND and exits 1 at every single Stop.
+test('wrapper exits quietly when the cli it points at is gone', () => {
+  const { settings } = fresh();
+  const gone = path.join(fx.tmpDir(), 'moved-away', 'cli.js');
+  const script = path.join(fx.tmpDir(), 'wrapper-no-cli.sh');
+  fs.writeFileSync(script, settings.wrapperScript(gone), { mode: 0o755 });
+  execFileSync('sh', ['-n', script]);
+  const res = spawnSync('/bin/sh', [script], { encoding: 'utf8' });
+  assert.equal(res.status, 0, 'a moved package must not fail the Stop hook');
+  assert.equal(res.stderr, '', 'and must not print at every Stop');
+});
+
 test('wrapper survives shell metacharacters in the paths it embeds', () => {
   const { settings } = fresh();
   const dir = path.join(fx.tmpDir(), 'we$ird `back` "quoted" \\slashed dir');
@@ -331,6 +422,19 @@ test('the cli prints expected errors without a stack trace', () => {
   assert.equal(res.status, 1);
   assert.match(res.stderr, /not valid JSON/);
   assert.ok(!/\n\s+at /.test(res.stderr), `expected errors must not dump a stack: ${res.stderr}`);
+});
+
+// process.exit() can truncate a message still buffered on a piped stderr, so the cli sets the exit
+// code and lets the process end on its own.
+test('an unknown command prints the whole help text and exits 1', () => {
+  const cli = path.resolve(__dirname, '..', 'bin', 'cli.js');
+  const res = spawnSync(process.execPath, [cli, 'nope'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: fx.tmpDir() },
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /Unknown command: nope/);
+  assert.match(res.stderr, /config {6}Show or change settings/, 'the help text must survive whole on a pipe');
 });
 
 test('the cli still prints a stack for unexpected errors', () => {

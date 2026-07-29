@@ -55,10 +55,21 @@ function sessions(projectFilter) {
 
 const titleOf = (file) => t.currentTitle(t.readEntries(file));
 
+// A title goes into a one-line JSONL record and a one-row list, so newlines, tabs, and terminal
+// escapes get flattened to single spaces and the length is capped. Applied on the way in (rename)
+// and on the way out (list, search) - a title the app or the model wrote never passed through here,
+// and an escape sequence read off a transcript would otherwise reach the user's terminal raw. Only
+// characters that would break the row are touched; punctuation, hyphens included, survives as typed.
+const sanitizeTitle = (s) => String(s == null ? '' : s)
+  .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+  .replace(/[\s\u0000-\u001f\u007f]+/g, ' ')
+  .trim()
+  .slice(0, 120);
+
 // The date is the user's, not UTC - a session from last night shouldn't read as tomorrow.
 // en-CA gives the ISO-shaped YYYY-MM-DD everyone can sort by eye.
 const line = (mtime, sessionId, title) =>
-  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${title || '(untitled)'}\n`;
+  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${sanitizeTitle(title) || '(untitled)'}\n`;
 
 // Sessions touched in the last 10 minutes are probably still open - titling one would race the
 // app's own writes, and the Stop hook will get to it anyway.
@@ -69,16 +80,23 @@ const ACTIVE_WINDOW_MS = 10 * 60_000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 // An empty result from a --project that doesn't exist reads like "nothing to do" when it really
-// means "you typed the path wrong". Say which.
-function missingProject(argv) {
+// means "you typed the path wrong". Say which. An explicit but empty value ('--project
+// "$SOME_UNSET_VAR"') is the dangerous one: it resolves to the projects root, so it passes the
+// existence check, then reads as falsy downstream and sweeps every session in the store.
+function badProject(argv) {
   const p = opt(argv, '--project');
-  if (p === undefined || fs.existsSync(resolveProject(p))) return false;
+  if (p === undefined) return false;
+  if (p.trim() === '') {
+    usage('--project needs a project path or directory name - got an empty value\n');
+    return true;
+  }
+  if (fs.existsSync(resolveProject(p))) return false;
   usage(`No project directory: ${p}\n`);
   return true;
 }
 
 async function backfill(argv, testOpts = {}) {
-  if (missingProject(argv)) return;
+  if (badProject(argv)) return;
   const dryRun = flag(argv, '--dry-run');
   const model = opt(argv, '--model') || 'haiku';
   const all = sessions(opt(argv, '--project'));
@@ -124,17 +142,8 @@ async function backfill(argv, testOpts = {}) {
 
 async function rename(argv) {
   const [id, ...words] = argv;
-  // A title goes into a one-line JSONL record and a one-row list, so a pasted string with
-  // newlines, tabs, or terminal escapes gets flattened to single spaces first. The length cap
-  // keeps a runaway paste out of the transcript. A title that sanitizes to nothing is a
-  // usage error, not an empty rename. Only characters that would break the record are
-  // touched - punctuation the user typed, hyphens included, survives exactly as written.
-  const title = words
-    .join(' ')
-    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/[\s\u0000-\u001f\u007f]+/g, ' ')
-    .trim()
-    .slice(0, 120);
+  // A title that sanitizes down to nothing is a usage error, not an empty rename.
+  const title = sanitizeTitle(words.join(' '));
   if (!id || !title) return usage('Usage: claude-session-namer rename <session-id> "title"\n');
   const all = sessions();
   const exact = all.filter((s) => s.sessionId === id);
@@ -155,7 +164,7 @@ async function rename(argv) {
 }
 
 async function list(argv) {
-  if (missingProject(argv)) return;
+  if (badProject(argv)) return;
   for (const sess of sessions(opt(argv, '--project')).slice(0, 50)) {
     process.stdout.write(line(sess.mtime, sess.sessionId, titleOf(sess.file)));
   }

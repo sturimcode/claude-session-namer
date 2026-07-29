@@ -216,6 +216,44 @@ test('list and backfill reject a --project that resolves to nothing', async () =
   assert.equal(swept.code, 1);
 });
 
+// `--project "$SOME_UNSET_VAR"` is the real case: an empty value used to pass the existence check
+// (the projects root itself) and then read as falsy, sweeping every project in the store.
+test('an explicit but empty --project is a usage error, not a sweep of everything', async () => {
+  const { commands, projectDir } = fresh();
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  for (const value of ['', '   ']) {
+    const listed = await exitCodeOf(() => commands.list(['--project', value]));
+    assert.equal(listed.out, '', `list swept the whole store for --project ${JSON.stringify(value)}`);
+    assert.match(listed.err, /--project/);
+    assert.equal(listed.code, 1);
+
+    const swept = await exitCodeOf(() => commands.backfill(['--project', value], { runner: () => { throw new Error('must not sweep'); } }));
+    assert.equal(swept.out, '', `backfill swept the whole store for --project ${JSON.stringify(value)}`);
+    assert.match(swept.err, /--project/);
+    assert.equal(swept.code, 1);
+  }
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
+// rename sanitizes on write, but a title the app or the model wrote lands in the transcript
+// unfiltered - the display path has to hold the line too.
+test('list and search strip escapes from a title written outside rename', async () => {
+  const { commands, projectDir } = fresh();
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [
+    fx.userEntry('about ses bounces'),
+    fx.titleEntry('\u001b[31m[Emails] SES fix\nsecond line'),
+  ]);
+  const out = await capture(() => commands.list([]));
+  assert.equal(out.trim().split('\n').length, 1, 'a title with a newline must not break the row');
+  assert.ok(out.includes('[Emails] SES fix second line'), out);
+  assert.ok(!out.includes('\u001b'), 'terminal escapes must not reach the terminal');
+  const found = await capture(() => commands.search(['ses fix']));
+  assert.ok(found.includes('aaa11111'), found);
+  assert.ok(!found.includes('\u001b'));
+});
+
 test('search matches titles case-insensitively and reports a missing query', async () => {
   const { commands, projectDir } = fresh();
   fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('nothing relevant'), fx.titleEntry('[Emails] SES fix')]);

@@ -2,12 +2,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const paths = require('./paths');
 
-// Our own entries are the ones whose command points at the claude-session-namer install dir
-// (paths.hookScript() always lives under a 'claude-session-namer' directory). Everything else in
-// hooks.Stop belongs to the user or another tool and must survive install and uninstall untouched.
-const isOurs = (entry) => JSON.stringify(entry).includes('claude-session-namer');
-
 const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// Our own entries are the ones whose command points at the claude-session-namer install dir
+// (paths.hookScript() always lives under a 'claude-session-namer' directory). Only the command is
+// read, quoted or not, so an entry that installs a different tool and merely mentions this one in a
+// name or a comment stays put. Everything else in hooks.Stop belongs to the user or another tool
+// and must survive install and uninstall untouched.
+const isOurs = (entry) =>
+  isPlainObject(entry) &&
+  Array.isArray(entry.hooks) &&
+  entry.hooks.some((h) => isPlainObject(h) && typeof h.command === 'string' && h.command.includes('claude-session-namer'));
 
 // Errors the user is meant to read and act on, as opposed to bugs. The cli prints these as a plain
 // message; everything else keeps its stack.
@@ -17,7 +22,10 @@ function expected(message) {
   return err;
 }
 
-const describe = (v) => (Array.isArray(v) ? 'an array' : `a ${typeof v}`);
+const describe = (v) => {
+  if (Array.isArray(v)) return 'an array';
+  return typeof v === 'object' ? 'an object' : `a ${typeof v}`;
+};
 
 // hooks and hooks.Stop have exactly one legal shape each. Anything else - an array where an object
 // belongs, a string, an object where the Stop list belongs - is either someone else's format or a
@@ -72,9 +80,19 @@ function readSettings() {
 
 // Settings often live in a dotfiles repo behind a symlink. Writing tmp-then-rename against the link
 // itself would replace it with a regular file and quietly cut the user's settings loose from their
-// dotfiles, so the whole dance runs against the resolved path.
+// dotfiles, so the whole dance runs against the resolved path. realpathSync also fails on a link
+// whose target doesn't exist yet - a dotfiles repo not checked out, a file the user hasn't created -
+// and falling back to the link path there is the exact severing case, so the intended target is
+// read off the link instead and created. A relative target resolves against the link's own
+// directory, the way the kernel resolves it, not against the process cwd.
 function resolvedSettingsFile() {
-  try { return fs.realpathSync(paths.settingsFile()); } catch { return paths.settingsFile(); }
+  const link = paths.settingsFile();
+  try { return fs.realpathSync(link); } catch { /* missing file, or a link pointing at one */ }
+  try {
+    const target = path.resolve(path.dirname(link), fs.readlinkSync(link));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    return target;
+  } catch { return link; } // not a symlink at all - the file simply isn't there yet
 }
 
 // Same tmp-then-rename dance as the state file, and for a stronger reason: a crash partway through
@@ -97,22 +115,28 @@ function writeSettings(s) {
 // Paths land inside double quotes in the wrapper, where sh still expands $ and ` and honours \.
 const shEscape = (s) => s.replace(/(["$`\\])/g, '\\$1');
 
-// A path with a space in it word-splits under sh and the hook 127s at every Stop, so the stored
-// command quotes it. Unquoted otherwise - the plain path is what most users expect to see in their
-// settings.json, and the substring match that identifies our entry works either way.
-const hookCommand = (script) => (/\s/.test(script) ? `"${script}"` : script);
+// A path with a space in it word-splits under sh and the hook 127s at every Stop; a path carrying
+// $, a backtick, a quote or a backslash is worse, because sh expands it into something else
+// entirely. Anything outside a plain path alphabet is quoted and escaped. Unquoted otherwise - the
+// plain path is what most users expect to see in their settings.json, and the command match that
+// identifies our entry works either way.
+const NEEDS_QUOTING = /[^A-Za-z0-9_/.-]/;
+const hookCommand = (script) => (NEEDS_QUOTING.test(script) ? `"${shEscape(script)}"` : script);
 
 // The hook runs as a shell wrapper rather than a direct node invocation so it survives nvm version
 // switches: whatever node is on PATH at hook time wins, and the node that ran the installer is the
 // fallback for the case where the hook fires with no PATH node at all. If neither exists - the
 // install-time node was uninstalled - we exit 0 rather than let sh report 127 after every single
-// turn; titling is a nicety and must never be noise in the user's session.
+// turn; titling is a nicety and must never be noise in the user's session. The cli itself gets the
+// same treatment: an nvm upgrade relocates global node_modules and the package moves out from under
+// the embedded path, which would otherwise print MODULE_NOT_FOUND and exit 1 at every Stop.
 function wrapperScript(cli) {
   return [
     '#!/bin/sh',
     '# claude-session-namer Stop hook',
     `if command -v node >/dev/null 2>&1; then NODE=node; else NODE="${shEscape(process.execPath)}"; fi`,
     'command -v "$NODE" >/dev/null 2>&1 || exit 0',
+    `[ -e "${shEscape(cli)}" ] || exit 0`,
     `exec "$NODE" "${shEscape(cli)}" hook`,
     '',
   ].join('\n');

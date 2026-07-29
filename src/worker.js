@@ -61,26 +61,40 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
     runner,
   });
 
+  // A dry run writes nothing - no transcript record, no state - so it never reaches the reload.
+  if (dryRun) {
+    return generated === 'KEEP'
+      ? { action: 'kept', title: vague ? null : title }
+      : { action: 'dry-run', title: generated };
+  }
+
+  // generateTitle just blocked for up to 90 seconds on `claude -p`. Anything the copy loaded before
+  // that call knows about state is stale: a worker for another session that finished inside the
+  // window has saved its own copy since, and writing ours over it would erase that session's
+  // `written` claim - which makes its title read as a human's and marks it manual, permanently.
+  // Re-load and re-apply every mutation against fresh state, so the window is milliseconds wide.
+  const fresh = stateMod.load();
+  const freshSess = stateMod.session(fresh, sessionId);
+  if (turns < freshSess.lastCheckTurns) freshSess.lastCheckTurns = 0;
+  if (turns < (freshSess.lastTryTurns || 0)) freshSess.lastTryTurns = 0;
+
   if (generated === 'KEEP') {
     // KEEP on a session that still has no usable title is the low-signal guard, not an
     // endorsement - don't move the baseline, or the next Stop event would be gated out and
     // the session would stay untitled. Record the attempt instead, so we wait for new turns
     // rather than re-asking the same question of the same transcript.
-    if (!dryRun) {
-      if (vague) sess.lastTryTurns = turns; else sess.lastCheckTurns = turns;
-      stateMod.save(s);
-    }
+    if (vague) freshSess.lastTryTurns = turns; else freshSess.lastCheckTurns = turns;
+    stateMod.save(fresh);
     return { action: 'kept', title: vague ? null : title };
   }
-  if (dryRun) return { action: 'dry-run', title: generated };
 
   // Claim the title in state BEFORE it can appear in the transcript: a crash between the two
   // writes would otherwise leave our own title looking like a human's on the next run.
-  if (!sess.written.includes(generated)) sess.written.push(generated);
-  stateMod.save(s);
+  if (!freshSess.written.includes(generated)) freshSess.written.push(generated);
+  stateMod.save(fresh);
   t.appendTitleRecord(transcriptPath, sessionId, generated);
-  stateMod.recordTitle(s, sessionId, generated, turns);
-  stateMod.save(s);
+  stateMod.recordTitle(fresh, sessionId, generated, turns);
+  stateMod.save(fresh);
   return { action: 'titled', title: generated };
 }
 

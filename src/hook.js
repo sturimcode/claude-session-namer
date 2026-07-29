@@ -33,6 +33,10 @@ function readStdin(stream = process.stdin, timeoutMs = STDIN_TIMEOUT_MS) {
       stream.removeListener('data', onData);
       stream.removeListener('end', done);
       stream.removeListener('error', done);
+      // A stream with no error listener at all throws on the next error, so a late EPIPE - the
+      // writer going away after we already have what we need - would take the hook down. One
+      // no-op listener stays behind to swallow it; it holds nothing open.
+      stream.on('error', () => {});
       stream.pause();
       resolve(data);
     };

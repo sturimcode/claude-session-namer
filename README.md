@@ -87,6 +87,10 @@ Read these before installing.
 
 **Requirements:** the `claude` CLI on your PATH, and Node 18 or newer.
 
+**macOS and Linux.** Windows is untested - the hook installs as a `/bin/sh` wrapper.
+
+**A title you set in the app can still be overwritten if it reads as vague.** The tool tells your titles from Claude Code's own defaults by checking whether the title is just the opening of your first message - that is what the defaults are. So a name you type in the app that happens to start your first message ("SES bounces", on a session that opened with "SES bounces are up to 4%") looks like a default and is fair game. A title set with `rename` is always protected: the CLI marks the session yours and the tool stops touching it. App renames rely on the heuristic.
+
 **Don't export `CLAUDE_SESSION_NAMER_WORKER` in the shell that launches Claude Code.** That variable is the recursion guard - the worker sets it on its own `claude -p` call so the resulting Stop hook doesn't spawn another worker. If it is already set in your environment, titling silently does nothing.
 
 **Reinstall after moving the package.** The hook wrapper embeds the absolute path to the CLI. If you move or reinstall the package elsewhere, run `claude-session-namer install` again.

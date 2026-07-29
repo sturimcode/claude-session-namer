@@ -195,6 +195,55 @@ test('a dry run never writes state', () => {
   assert.equal(require('node:fs').existsSync(stateFile), false);
 });
 
+// `claude -p` blocks for up to 90 seconds. Another worker that finishes inside that window saves
+// state of its own, and a stale in-memory copy written afterwards erases it - including a `written`
+// claim, whose loss makes our own title read as a human's and marks that session manual forever.
+test('a concurrent state write during generation is not lost', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    const other = state.load();
+    state.session(other, 's2').written.push('[Other] Concurrent work');
+    state.recordTitle(other, 's2', '[Other] Concurrent work', 4);
+    state.save(other);
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'titled');
+  const after = state.load();
+  assert.deepEqual(after.sessions.s1.written, ['[Emails] SES triage']);
+  assert.equal(after.sessions.s1.lastCheckTurns, 2);
+  assert.deepEqual(after.sessions.s2.written, ['[Other] Concurrent work']);
+  assert.equal(after.sessions.s2.lastCheckTurns, 4);
+  assert.deepEqual(after.prefixes, { Emails: 1, Other: 1 });
+});
+
+test('a concurrent state write during a generation that ends in KEEP is not lost', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    const other = state.load();
+    state.session(other, 's2').manual = true;
+    state.save(other);
+    return 'KEEP';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'kept');
+  const after = state.load();
+  assert.equal(after.sessions.s1.lastTryTurns, 2);
+  assert.equal(after.sessions.s2.manual, true);
+});
+
+// The kept title is what the session is left with. A title that reads vague is not one, even when
+// a string is present - reporting 'New session' as the kept title would misread as a real name.
+test('a KEEP on a vague-but-present title reports no title', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  // the session's name is back to the app's vague default, but the drift baseline stands
+  file = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry('New session')]);
+  assert.deepEqual(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }), { action: 'kept', title: null });
+});
+
 test('parseArgs reads flags in any order and tolerates missing values', () => {
   const { worker } = setup();
   assert.deepEqual(

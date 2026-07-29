@@ -19,7 +19,7 @@ Usage: claude-session-namer <command>
 async function main() {
   if (!cmd || cmd === 'help' || cmd === '--help') { process.stdout.write(help); return; }
   if (cmd === '--version') { process.stdout.write(require('../package.json').version + '\n'); return; }
-  if (!commands.includes(cmd)) { process.stderr.write(`Unknown command: ${cmd}\n${help}`); process.exit(1); }
+  if (!commands.includes(cmd)) { process.stderr.write(`Unknown command: ${cmd}\n${help}`); process.exitCode = 1; return; }
   if (cmd === 'hook') return require('../src/hook').run();
   if (cmd === 'worker') return require('../src/worker').runFromArgs(process.argv.slice(3));
   if (cmd === 'install') return require('../src/settings').install(process.argv.slice(3));
@@ -28,8 +28,9 @@ async function main() {
 }
 // Errors we raise on purpose (a corrupt settings.json, a hooks block we refuse to edit) are
 // instructions to the user, so they print as a plain message. Anything else is a bug and keeps its
-// stack. Either way the exit code is 1.
+// stack. Either way the exit code is 1 - set, not forced, because process.exit() can truncate a
+// message still buffered on a piped stderr.
 main().catch((err) => {
   process.stderr.write((err && err.expected ? err.message : String(err && err.stack || err)) + '\n');
-  process.exit(1);
+  process.exitCode = 1;
 });

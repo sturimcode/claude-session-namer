@@ -19,7 +19,7 @@ A zero-dependency Node CLI plus a Claude Code Stop hook that keeps session title
 - Manual rename, list, and search commands
 - No API key - titles are generated via `claude -p --model haiku` on the user's existing subscription
 
-MIT license. npm distribution now (`npx claude-session-namer install`), Claude Code plugin wrapper as a later phase.
+MIT license. npm distribution now (`npm install -g claude-session-namer`, then `claude-session-namer install`), Claude Code plugin wrapper as a later phase. A global install rather than `npx`: the hook wrapper embeds the absolute path to the CLI, and an npx path points into a cache directory that gets pruned.
 
 ## Mechanism
 
@@ -76,7 +76,7 @@ Verified against current Anthropic docs (2026-07-29):
 
 - Headless `claude -p` is a documented, sanctioned interface for programmatic use; usage counts against the user's subscription normally. No policy restriction on local automated invocation. This is distinct from the prohibited pattern of extracting subscription OAuth tokens for third-party apps - this tool only invokes the official CLI locally as the user.
 - The transcript JSONL format is explicitly internal and can change between releases. Writing the `custom-title` record mimics a record type the app itself writes, but it is unsupported territory. Failure mode is benign: an append-only record the app either recognizes or ignores; a format change means titles stop applying until patched, never session corruption.
-- Mitigations: feature-detect the record shape from records the app has already written where possible; README states plainly that the tool touches unsupported internals and may break on Claude Code updates.
+- Mitigation as built: the record shape is hardcoded - the same `custom-title` type the app itself writes - rather than feature-detected from records already in the transcript. Feature detection was considered and dropped: a session with no title record yet has nothing to detect from, which is exactly the case that matters. If the format changes, titles stop applying until the writer is patched. The README states plainly that the tool touches unsupported internals and may break on a Claude Code update.
 
 ## Testing plan
 

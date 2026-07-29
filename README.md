@@ -32,6 +32,8 @@ Titles you set through `rename` or `protect` are never overwritten. Those mark t
 
    From then on, new sessions title themselves. `install` writes a hook wrapper to `~/.claude/claude-session-namer/hook.sh` and registers one Stop hook entry in `~/.claude/settings.json`. Existing hooks are left alone.
 
+   Titles come from `claude -p`, so `install` finishes by calling it once to check it works. If that call fails - the CLI is not signed in, or not on PATH - install still succeeds and prints a warning saying so, because the hook itself fails silently and would otherwise never tell you.
+
 3. Optional - preview titling the sessions you already have:
 
    ```

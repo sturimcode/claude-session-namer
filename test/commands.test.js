@@ -143,6 +143,17 @@ test('rename flattens newlines and terminal escapes into a single row', async ()
   assert.equal(lines.length, 1);
 });
 
+// Sanitizing is about characters that break the one-line record, not about punctuation the user
+// meant - a hyphen carries meaning in a title and has to survive untouched.
+test('rename leaves a hyphenated title exactly as typed', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('x')]);
+  await capture(() => commands.rename([id, '[Emails]', 'Alias-domain', 'split', '-', 'SES-fix']));
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] Alias-domain split - SES-fix');
+});
+
 test('rename rejects a title that sanitizes down to nothing', async () => {
   const { commands, projectDir } = fresh();
   const id = 'aaa11111-1111-1111-1111-111111111111';

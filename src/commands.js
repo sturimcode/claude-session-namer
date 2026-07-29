@@ -127,11 +127,12 @@ async function rename(argv) {
   // A title goes into a one-line JSONL record and a one-row list, so a pasted string with
   // newlines, tabs, or terminal escapes gets flattened to single spaces first. The length cap
   // keeps a runaway paste out of the transcript. A title that sanitizes to nothing is a
-  // usage error, not an empty rename.
+  // usage error, not an empty rename. Only characters that would break the record are
+  // touched - punctuation the user typed, hyphens included, survives exactly as written.
   const title = words
     .join(' ')
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/[\s\u0000-\u001f\u007f-]+/g, ' ')
+    .replace(/[\s\u0000-\u001f\u007f]+/g, ' ')
     .trim()
     .slice(0, 120);
   if (!id || !title) return usage('Usage: claude-session-namer rename <session-id> "title"\n');

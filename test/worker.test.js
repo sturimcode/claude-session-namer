@@ -471,7 +471,10 @@ test('prefix off: a prefixed title is restyled down to a bare phrase', () => {
   assert.equal(res.title, 'SES bounce triage');
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
-  assert.ok(prompt.includes('drop the prefix'));
+  assert.ok(prompt.includes('- Drop the prefix and keep the phrase as it is'));
+  // stripping a prefix is mechanical, so the prompt spends nothing on the conversation
+  assert.ok(!prompt.includes('Conversation excerpt'));
+  assert.ok(!prompt.includes('question 0 about SES bounces'));
   // and a bare title under the same setting is the conforming one
   const file2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
   assert.equal(
@@ -480,8 +483,10 @@ test('prefix off: a prefixed title is restyled down to a bare phrase', () => {
   );
 });
 
-// Every existing protection sits upstream of the format check, so a wrong-format title on a session
-// the user owns stays exactly as they left it.
+// Both hard protections - the manual flag and the app's 'user' marker - sit upstream of the format
+// check, so a wrong-format title on a session the user owns stays exactly as they left it. The
+// KEEP-biased personal-label rule is not one of them: it lives in the drift prompt, which restyle
+// mode strips, so an unmarked personal label gets reformatted rather than spared.
 test('a wrong-format title on a protected or app-renamed session is left as it is', () => {
   const { worker, state, projectDir } = setup({ s2: 'user' });
   const t = require('../src/transcript');
@@ -497,6 +502,23 @@ test('a wrong-format title on a protected or app-renamed session is left as it i
   const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('Revisit Monday', 's2')]);
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: f2, runner: mustNotCall }).action, 'app-renamed-skip');
   assert.equal(t.currentTitle(t.readEntries(f2)), 'Revisit Monday');
+});
+
+// The other half of that: a personal label carrying neither marker is not spared. The KEEP rule that
+// would have spared it is a drift-prompt rule, and restyle mode strips every KEEP rule - so the
+// label is reshaped into the format with its meaning intact. `protect` is what holds one as typed.
+test('an unmarked personal label in the wrong format is reformatted, not spared', () => {
+  const { worker, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Revisit Monday')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] Revisit Monday'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, '[Emails] Revisit Monday');
+  assert.ok(!prompt.includes('deliberate personal label'));
 });
 
 // KEEP is forbidden in restyle mode, but the parser still returns it defensively when a model
@@ -541,6 +563,33 @@ test('a wrong-format title is restyled even when a drift check is due', () => {
   assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
   assert.ok(!prompt.includes('If the current title still accurately describes'));
   assert.equal(state.load().sessions.s1.lastCheckTurns, 20);
+});
+
+// A session nobody is adding turns to any more never grows, so its baseline gates the reformat out
+// for good and a sweep over history could never converge it - the one thing flipping the setting
+// promises. `backfill` passes force to open that gate, and only that gate.
+test('force opens the reformat gate on a baselined session and nothing else', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const mustNotCall = () => { throw new Error('must not call the model'); };
+
+  // a conforming title with a baseline - force is not a licence to re-run the drift check
+  const conforming = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
+
+  // a non-conforming title sitting at its own baseline: gated out unforced, converges forced
+  const file = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
+  const s = state.load();
+  state.session(s, 's2').lastCheckTurns = 2;
+  state.save(s);
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, runner: mustNotCall }).action, 'no-check-needed');
+  const res = worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: () => '[Emails] SES bounce triage' });
+  assert.equal(res.action, 'restyled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  // and the gate closes on the title it just wrote - a second forced look costs nothing
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: mustNotCall }).action, 'no-check-needed');
 });
 
 // A session with nothing usable to reformat needs a title, not a restyle - the first-title path

@@ -204,7 +204,12 @@ async function backfill(argv, testOpts = {}) {
     // One unreadable transcript, one claude invocation that dies, one unwritable state file must
     // not end the sweep - count it, say which session, and keep going.
     try {
-      res = processSession({ sessionId: sess.sessionId, transcriptPath: sess.file, model, dryRun, runner: testOpts.runner });
+      // force reformats a title that is out of format now, whatever the session's drift baseline
+      // says. A sweep is the user asking for their existing titles to converge on the current
+      // setting, and most of those sessions are finished - their turn count will never grow, so the
+      // growth gate the reformat normally waits on would never open and the sweep would do nothing.
+      // It buys no extra drift checks: those still wait for the session to double.
+      res = processSession({ sessionId: sess.sessionId, transcriptPath: sess.file, model, dryRun, force: true, runner: testOpts.runner });
     } catch (err) {
       failed++;
       consecutiveFailures++;

@@ -104,7 +104,7 @@ claude-session-namer config prefix off
 
 Or install with `--no-prefix`. `config` with no arguments prints the current setting.
 
-The setting is a format contract, not a preference applied to new titles only: with prefixes on, every title the tool manages carries one, and with prefixes off, none does. A title that describes the session accurately but is in the wrong format gets reformatted rather than regenerated - the phrase keeps its meaning and only the shape changes, so `SES bounce triage` becomes `[Emails] SES bounce triage` and back again if you flip the setting. Flipping it converges the titles you already have the next time each session is checked, or all at once if you run `backfill`. Sessions you renamed by hand, protected, or renamed in the desktop app are exempt, as always.
+The setting is a format contract, not a preference applied to new titles only: with prefixes on, every title the tool manages carries one, and with prefixes off, none does. A title that describes the session accurately but is in the wrong format gets reformatted rather than regenerated - the phrase keeps its meaning and only the shape changes, so `SES bounce triage` becomes `[Emails] SES bounce triage` and back again if you flip the setting. Flipping it converges the titles you already have: a session you're still working in is reformatted the next time it's checked, and `backfill` does the rest in one pass - a session you've finished with never gains turns again, so a sweep is what converges those. Sessions you renamed by hand, protected, or renamed in the desktop app are exempt, as always.
 
 ## Desktop app sidebar
 

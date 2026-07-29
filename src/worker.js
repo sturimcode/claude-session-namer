@@ -8,7 +8,8 @@ const appstore = require('./appstore');
 // Returns { action, title? } - action is one of:
 //   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | restyled |
 //   dry-run | title-changed
-function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, runner }) {
+// `force` opens the format-reformat gate and nothing else - see the restyle block below.
+function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, force = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
   if (turns < 1) return { action: 'no-turns' };
@@ -57,15 +58,19 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   // title that describes the work accurately but in the wrong shape is reformatted with its meaning
   // intact rather than re-derived - so a session titled before the setting changed, or one the app
   // named in its own format, converges the next time we look at it.
-  // The look is on the same growth cadence as a drift check, and it takes precedence over one: a
-  // non-conforming title can't be the answer to "has this drifted", because a KEEP there would leave
-  // the format wrong for good. A vague title has nothing worth preserving, so the first-title path
-  // keeps it.
+  // The look is on the doubling gate, and it takes precedence over a drift check: a non-conforming
+  // title can't be the answer to "has this drifted", because a KEEP there would leave the format
+  // wrong for good. A vague title has nothing worth preserving, so the first-title path keeps it.
+  // `force` bypasses the gate, and a sweep passes it. Without that bypass the feature only ever
+  // reaches live sessions: a session that has been looked at before carries a baseline, and one
+  // nobody is adding turns to any more never grows past it, so the gate on a finished session never
+  // opens again and no sweep could converge it. The bypass is scoped to this gate alone - forcing the
+  // drift recheck would re-derive meaning on every session in a sweep, at a model call each.
   const config = stateMod.loadConfig();
   const needsRestyle = !vague
     && Boolean(title)
     && !titler.matchesFormat(title, config.prefix)
-    && (sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2);
+    && (force || sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2);
 
   if (!needsFirst && !needsRecheck && !needsRestyle) {
     // Sessions that arrived already titled (by the app's own title record, usually) have no

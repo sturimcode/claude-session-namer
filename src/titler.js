@@ -47,7 +47,10 @@ function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = tr
   const rules = [
     usePrefix ? '- Output format: [Prefix] Short phrase' : '- Output format: Short phrase (no prefix, no brackets)',
   ];
-  if (usePrefix) rules.push('- Prefix: 1-2 words naming the project or workstream');
+  // The character bound is the same one matchesFormat holds a title to. Stating it here is what keeps
+  // the two ends in step - a prefix longer than that reads as a whole title parked in brackets, and
+  // asking for one the tool would then call non-conforming starts a reformat over a fine answer.
+  if (usePrefix) rules.push('- Prefix: 1-2 words naming the project or workstream, at most 25 characters');
   rules.push('- Max 45 characters total, sentence case phrase, no quotes, no trailing period');
 
   // Restyle is not a re-title. The title already says what the session is about - it just isn't in
@@ -58,7 +61,7 @@ function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = tr
     rules.push(
       usePrefix
         ? '- Use the conversation excerpt only to choose the right prefix - do not re-describe the work'
-        : '- Use the conversation excerpt only for context - drop the prefix and keep the phrase'
+        : '- Drop the prefix and keep the phrase as it is'
     );
     rules.push('- Never output KEEP - always output a title');
     rules.push('- Output ONLY the title - no preamble, no explanation, no markdown');
@@ -81,6 +84,12 @@ function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = tr
   // KEEP can't stand as an example of an answer restyle mode has just forbidden.
   const examples = (usePrefix ? USE_PREFIX_EXAMPLES : BARE_PHRASE_EXAMPLES).filter((e) => !(restyle && e === 'KEEP'));
 
+  // Dropping a prefix is a mechanical edit of the title itself, so the conversation has nothing to
+  // contribute and the excerpt is left out rather than sent and ignored. Prefix-mode restyle still
+  // needs it: choosing the prefix means knowing what the work is.
+  const body = restyle && !usePrefix ? '' : excerpt;
+  const excerptSection = body ? `\n\nConversation excerpt:\n${body}` : '';
+
   return `${PROMPT_SIGNATURE}
 
 ${header.join('\n')}
@@ -89,10 +98,7 @@ Rules:
 ${rules.join('\n')}
 
 Examples:
-${examples.join('\n')}
-
-Conversation excerpt:
-${excerpt}`;
+${examples.join('\n')}${excerptSection}`;
 }
 
 const stripQuotes = (s) => s.replace(/^["'`“‘]+|["'`”’]+$/g, '').trim();
@@ -120,6 +126,12 @@ function parseResponse(raw) {
 
   // Degenerate output - nothing, punctuation/symbols only, or a bare "[Prefix]".
   if (!s || /^[\s\p{P}\p{S}]*$/u.test(s) || /^\[[^\]]*\]$/.test(s)) return 'KEEP';
+
+  // "[Emails]Fix" and "[Emails]   Fix" mean what "[Emails] Fix" means, and the format check counts
+  // only the last as a prefix. Rewriting the spacing is no judgement about the title, and without it
+  // the tool can write a title it classifies as non-conforming on the very next look - then spend a
+  // model call reformatting an answer that was already right.
+  s = s.replace(/^(\[[^\]]+\])\s*/, '$1 ');
 
   const chars = [...s];
   if (chars.length > MAX_TITLE_CHARS) {

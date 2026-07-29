@@ -540,6 +540,38 @@ test('backfill counts and prints a restyled title', async () => {
   assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
 });
 
+// The point of sweeping history after flipping the setting is that titles already written converge.
+// A session that has been checked before carries a drift baseline, and its turn count never grows
+// again once the conversation is over - so the growth gate the reformat normally waits on can never
+// open, and only a forced sweep converges it.
+test('backfill converges a titled session left out of format by a setting change', async () => {
+  const { commands, projectDir } = fresh();
+  const state = require('../src/state');
+  const t = require('../src/transcript');
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+
+  // the first sweep titles it and sets the baseline
+  await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce triage' }));
+  assert.equal(state.load().sessions[id].lastCheckTurns, 1);
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+
+  // prefixes go off, so the title the sweep just wrote is the non-conforming one
+  state.saveConfig({ prefix: false });
+  age(file, HOUR);
+  let calls = 0;
+  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return 'SES bounce triage'; } }));
+  assert.equal(calls, 1);
+  assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
+  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+
+  // and the gate closes once the title conforms - a second sweep spends nothing
+  age(file, HOUR);
+  const second = await capture(() => commands.backfill([], { runner: () => { throw new Error('must not call the model'); } }));
+  assert.ok(second.includes('0 session(s) titled, 1 skipped.'), second);
+});
+
 // Backfill counts anything that isn't a title it wrote as skipped, so the app-rename protection
 // carries over to the sweep without backfill knowing the action exists.
 test('backfill leaves a session renamed in the desktop app alone', async () => {

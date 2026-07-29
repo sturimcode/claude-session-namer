@@ -123,4 +123,5 @@ Recurring research sweep (monthly, set up as a scheduled task once the tool ship
 
 - Claude Code plugin wrapper (hooks + slash commands via plugin distribution)
 - Optional API-key mode for users who prefer metered billing over subscription usage
+- `--concurrency <n>` for backfill: a few parallel CLI calls would cut a sweep several-fold (the per-call cost is CLI startup, not the model). Held out of v1 on purpose - the sequential throttle is rate-limit politeness, and how the subscription layer treats parallel headless calls is untested
 - Swap the JSONL append for a public title API if Anthropic ships one

@@ -529,10 +529,28 @@ test('a claude probe that times out warns rather than hanging the install', () =
 
 test('the probe warning carries the claude CLI\'s own stderr line', () => {
   const { settings } = fresh();
-  const spawn = fakeSpawn({ status: 1, stdout: '', stderr: '\nInvalid API key: 401 authentication_error\n  more detail\n' });
+  const spawn = fakeSpawn({ status: 1, stdout: 'partial answer\n', stderr: '\nInvalid API key: 401 authentication_error\n  more detail\n' });
   const { err } = captureBoth(() => settings.install([], { spawn }));
   assert.match(err, /Invalid API key: 401 authentication_error/, 'a 401 is the thing the user needs to see');
   assert.ok(!err.includes('more detail'), 'one line only - the rest is noise in an install summary');
+  assert.ok(!err.includes('partial answer'), 'stderr is the better diagnosis when the CLI wrote one');
+});
+
+// Observed live: an unauthenticated CLI exits 1 with the reason on stdout and nothing on stderr.
+// Reading stderr alone left the most common real failure showing a bare exit code.
+test('the probe warning falls back to the claude CLI\'s stdout line', () => {
+  const { settings } = fresh();
+  const spawn = fakeSpawn({ status: 1, stdout: 'Not logged in · Please run /login\n', stderr: '' });
+  const { err } = captureBoth(() => settings.install([], { spawn }));
+  assert.match(err, /Not logged in · Please run \/login/, 'the CLI said why - pass it on');
+  assert.match(err, /claude exited 1/);
+});
+
+test('a probe detail line is capped however long the CLI\'s output is', () => {
+  const { settings } = fresh();
+  const spawn = fakeSpawn({ status: 1, stdout: 'x'.repeat(5000), stderr: '' });
+  const { err } = captureBoth(() => settings.install([], { spawn }));
+  assert.ok(err.length < 700, `an install summary is not a log dump: ${err.length} chars`);
 });
 
 test('the probe runs claude headless with the recursion guard and a timeout', () => {

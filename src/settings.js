@@ -150,6 +150,8 @@ const INSTALL_USAGE = 'Usage: claude-session-namer install [--no-prefix]\n';
 // network-stalled CLI can't leave the user staring at a hung install.
 const PROBE_TIMEOUT_MS = 30_000;
 
+const firstLine = (s) => String(s || '').split('\n').map((l) => l.trim()).find(Boolean);
+
 // Titles only ever come from `claude -p`, and the hook is silent on every failure path by design, so
 // a CLI that isn't authenticated (or isn't installed) makes titling a no-op nobody hears about.
 // install is the one moment we can say so, and it says it without failing: the hook is registered
@@ -174,7 +176,11 @@ function probe(spawn = spawnSync) {
   if (!res.error && res.status === 0) return null;
 
   const code = res.error && res.error.code;
-  const detail = String(res.stderr || '').split('\n').map((l) => l.trim()).find(Boolean);
+  // An unauthenticated CLI reports the reason on stdout ("Not logged in · Please run /login") and
+  // leaves stderr empty, so stderr alone left the most common failure showing a bare exit code.
+  // stderr still wins when it has anything: an API error or a crash lands there and diagnoses better
+  // than whatever partial answer stdout got to.
+  const detail = firstLine(res.stderr) || firstLine(res.stdout);
   if (code === 'ENOENT') {
     return probeWarning('the claude CLI was not found on PATH', '', 'install the claude CLI, then run \'claude /login\' if you are not signed in yet.');
   }

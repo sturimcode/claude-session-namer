@@ -92,6 +92,40 @@ test('KEEP on a still-untitled session retries once the conversation moves, not 
   assert.equal(state.load().sessions.s1.lastCheckTurns, 3);
 });
 
+test('a vague session past its drift baseline retries on growth, not on every event', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  // the title record is gone but the baseline remains, so the session reads vague with lastCheckTurns > 0
+  file = fx.writeTranscript(projectDir, 's1', chat(8));
+  let calls = 0;
+  const keep = () => { calls++; return 'KEEP'; };
+  const first = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep });
+  assert.equal(first.action, 'kept');
+  assert.equal(first.title, null); // nothing usable was kept - don't report a vague title as the kept one
+  assert.equal(calls, 1);
+  // repeated events at the same turn count have nothing new to go on - no more calls
+  for (let i = 0; i < 3; i++) worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep });
+  assert.equal(calls, 1);
+  assert.equal(state.load().sessions.s1.lastTryTurns, 8);
+  // one more turn of signal and it tries again
+  file = fx.writeTranscript(projectDir, 's1', chat(9));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep }).action, 'kept');
+  assert.equal(calls, 2);
+});
+
+test('a compacted transcript drops the stale retry marker too', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(8));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }).action, 'kept');
+  assert.equal(state.load().sessions.s1.lastTryTurns, 8);
+  // compaction rewrites the transcript shorter - the retry marker measured a transcript that no longer exists
+  file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+});
+
 test('a crash while writing the transcript record leaves the title claimed in state', () => {
   const { worker, state, projectDir } = setup();
   const t = require('../src/transcript');

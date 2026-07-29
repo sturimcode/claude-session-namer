@@ -30,14 +30,19 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
 
   // A transcript that shrank is not the one we measured against (rewrite, compaction,
   // truncation) - drop the stale baseline so an untitled session is treated as fresh.
+  // Both markers measured a transcript that no longer exists, so both are stale.
   if (turns < sess.lastCheckTurns) sess.lastCheckTurns = 0;
+  if (turns < (sess.lastTryTurns || 0)) sess.lastTryTurns = 0;
 
   // First-title urgency only applies before a baseline exists. Once lastCheckTurns is set we
   // have either titled the session or accepted the title it arrived with, and the growth gate
   // owns every later look. lastTryTurns bounds the retry on a session that stayed untitled -
   // a KEEP means there wasn't enough to go on, so wait for the conversation to move first.
-  const needsFirst = vague && sess.lastCheckTurns === 0 && turns > (sess.lastTryTurns || 0);
-  const needsRecheck = sess.lastCheckTurns > 0 && turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4;
+  // That retry bound gates the recheck path too: a session whose title record vanished reads
+  // vague with a baseline set, and without the growth check it would re-ask on every event.
+  const grew = turns > (sess.lastTryTurns || 0);
+  const needsFirst = vague && sess.lastCheckTurns === 0 && grew;
+  const needsRecheck = sess.lastCheckTurns > 0 && turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4 && grew;
   if (!needsFirst && !needsRecheck) {
     // Sessions that arrived already titled (eg by an ai-title) have no baseline yet - set one
     // here so drift tracking measures growth from now, not from turn zero. A still-vague
@@ -65,7 +70,7 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
       if (vague) sess.lastTryTurns = turns; else sess.lastCheckTurns = turns;
       stateMod.save(s);
     }
-    return { action: 'kept', title };
+    return { action: 'kept', title: vague ? null : title };
   }
   if (dryRun) return { action: 'dry-run', title: generated };
 

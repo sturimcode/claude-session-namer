@@ -129,7 +129,7 @@ Sessions you renamed in the app yourself are left out. `--all` puts them back in
 
 A few haiku calls per session, run through your existing Claude subscription via the `claude` CLI. No API key, no separate billing.
 
-A default backfill is a few dozen model calls and a few minutes. A `--all` backfill over a ~400-session store is roughly 350 model calls and 45 minutes or more - it runs sequentially with a throttle between calls.
+A default backfill is a few dozen model calls, and each call boots the `claude` CLI from scratch - 10 to 20 seconds apiece, so expect a sweep to run 10-15 minutes. A `--all` backfill over a ~400-session store is roughly 350 model calls and an hour or more. Both run sequentially with a throttle between calls, printing each title as it lands.
 
 ## Caveats
 

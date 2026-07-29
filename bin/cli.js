@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config'];
+const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config', 'sync-plan'];
 const cmd = process.argv[2];
 
 const help = `claude-session-namer - auto-title Claude Code sessions
@@ -16,6 +16,8 @@ Usage: claude-session-namer <command>
   list        List sessions with titles (--project <path>)
   search      Find sessions by title or content: search <query>
   config      Show or change settings: config [prefix on|off]
+  sync-plan   Print the titles the desktop app's sidebar is missing, as JSON
+              lines for an agent to push through the app (--all)
 `;
 
 async function main() {

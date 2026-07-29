@@ -21,3 +21,18 @@ test('paths fall back to ~/.claude', () => {
   const paths = require('../src/paths');
   assert.equal(paths.claudeDir(), path.join(os.homedir(), '.claude'));
 });
+
+// The desktop app's session store is its own directory, unrelated to CLAUDE_CONFIG_DIR - it lives
+// under Application Support and moves only for a test.
+test('the app store dir honours its override and otherwise sits under Application Support', () => {
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = '/tmp/fake-app-store';
+  delete require.cache[require.resolve('../src/paths')];
+  assert.equal(require('../src/paths').appStoreDir(), '/tmp/fake-app-store');
+
+  delete process.env.CLAUDE_SESSION_NAMER_APP_STORE;
+  delete require.cache[require.resolve('../src/paths')];
+  assert.equal(
+    require('../src/paths').appStoreDir(),
+    path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions'),
+  );
+});

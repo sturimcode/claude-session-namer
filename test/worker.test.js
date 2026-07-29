@@ -2,10 +2,14 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fx = require('./fixtures');
 
-function setup() {
+// appStore maps cliSessionId -> 'user' | 'auto' | null (null writes the record with no titleSource
+// field). Every setup gets a store of its own, empty by default, so a worker test never reads the
+// real desktop app store on the machine running the suite.
+function setup(appStore = {}) {
   const { configDir, projectDir } = fx.fakeConfig();
   process.env.CLAUDE_CONFIG_DIR = configDir;
-  for (const m of ['../src/paths', '../src/state', '../src/worker']) delete require.cache[require.resolve(m)];
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = fx.fakeAppStore(appStore);
+  for (const m of ['../src/paths', '../src/state', '../src/appstore', '../src/worker']) delete require.cache[require.resolve(m)];
   return { worker: require('../src/worker'), state: require('../src/state'), projectDir };
 }
 
@@ -47,6 +51,59 @@ test('a session marked manual in state is never overwritten', () => {
   // and it stays manual even at high growth
   const file2 = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('My hand-written name')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[X] Nope' }).action, 'manual-skip');
+});
+
+// The transcript can't tell a hand rename from the app's own auto-title, but the app's session
+// store can: it records titleSource 'user' for a title typed in the app UI. That marker is the
+// only reliable signal a human named the session, and it protects the title outright.
+test('a session renamed in the desktop app is left alone', () => {
+  const { worker, state, projectDir } = setup({ s1: 'user' });
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(4), fx.titleEntry('Revisit Monday')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('must not call the model'); } });
+  assert.equal(res.action, 'app-renamed-skip');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Revisit Monday');
+  // The app is consulted live on every run, so nothing is recorded - the day the marker changes,
+  // behavior follows it rather than a stale copy in our own state.
+  assert.equal(require('node:fs').existsSync(require('../src/paths').stateFile()), false);
+  assert.equal(state.load().sessions.s1, undefined);
+});
+
+// An untitled session whose store record says 'user' is still the user's - the protection is about
+// who owns the name, not about whether a title record has reached the transcript yet.
+test('the app-rename marker holds on an untitled session and at high growth', () => {
+  const { worker, projectDir } = setup({ s1: 'user' });
+  const bare = fx.writeTranscript(projectDir, 's1', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: bare, runner: () => '[X] Nope' }).action, 'app-renamed-skip');
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('Revisit Monday')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: () => '[X] Nope' }).action, 'app-renamed-skip');
+});
+
+// Almost every session in the store is titleSource 'auto' - the app naming its own sessions.
+// Skipping those would be skipping the entire job.
+test('an app auto-titled session is titled and drift-tracked as usual', () => {
+  const { worker, projectDir } = setup({ s1: 'auto' });
+  const file = fx.writeTranscript(projectDir, 's1', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+});
+
+test('a session the app store has never heard of is titled as usual', () => {
+  const { worker, projectDir } = setup({ 'some-other-session': 'user' });
+  const file = fx.writeTranscript(projectDir, 's1', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+});
+
+// Protection set in our own state is checked first and reported as its own action - a session can
+// be both, and 'manual-skip' is the one the user asked for by name.
+test('an explicitly protected session still reports manual-skip, app marker or not', () => {
+  const { worker, state, projectDir } = setup({ s1: 'user' });
+  const file = fx.writeTranscript(projectDir, 's1', chat(4));
+  const s = state.load();
+  state.session(s, 's1').manual = true;
+  state.save(s);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[X] Nope' }).action, 'manual-skip');
 });
 
 // The desktop app writes its own auto-titles as custom-title records, re-asserting the same string
@@ -277,6 +334,26 @@ test('a rename that lands mid-generate is not clobbered by the title we asked fo
   assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
   assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
   assert.equal(state.load().sessions.s1.manual, true);
+});
+
+// A rename typed in the desktop app writes no state at all - the only mark it leaves is the
+// titleSource in the app's own store. So the fresh-state re-check above cannot see it, and without
+// a second look at the marker our title lands on top of the name the user just typed, then the skip
+// on the next run freezes it there for good.
+test('an app rename that lands mid-generate is not clobbered by the title we asked for', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    // the user types a name in the app UI while `claude -p` is still blocked
+    fx.appStoreRecord(process.env.CLAUDE_SESSION_NAMER_APP_STORE, 's1', { titleSource: 'user', title: 'Revisit Monday' });
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'app-renamed-skip');
+  // nothing appended over their name, and nothing recorded - the marker is read live every run
+  assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 0);
+  assert.equal(require('node:fs').existsSync(require('../src/paths').stateFile()), false);
+  assert.equal(state.load().sessions.s1, undefined);
 });
 
 // A title that appeared while we were generating wins - ours would be appended after it and take

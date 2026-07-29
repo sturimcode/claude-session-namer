@@ -33,4 +33,32 @@ function fakeConfig() {
   return { configDir, projectDir };
 }
 
-module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig };
+// Writes one session file into an existing store root, nested the two directory levels deep the app
+// nests them. `spec` is 'user' | 'auto' | null - null omits titleSource entirely, the shape older
+// app builds left behind - or an object overriding any of { titleSource, title, sessionId }.
+// `slot` keeps two records in one store from colliding on a directory or a file name.
+function appStoreRecord(root, cliSessionId, spec = null, slot = `x${Math.random().toString(36).slice(2)}`) {
+  const dir = path.join(root, `outer-${slot}`, `inner-${slot}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const o = spec && typeof spec === 'object' ? spec : { titleSource: spec };
+  const record = {
+    sessionId: o.sessionId === undefined ? `app-${slot}` : o.sessionId,
+    cliSessionId,
+    title: o.title === undefined ? `App title ${slot}` : o.title,
+  };
+  if (o.titleSource) record.titleSource = o.titleSource;
+  fs.writeFileSync(path.join(dir, `local_${slot}.json`), JSON.stringify(record));
+  return record;
+}
+
+// Builds a temp stand-in for the desktop app's session store, which nests one JSON file per session
+// two directory levels deep. Takes { [cliSessionId]: spec }, with the spec shapes appStoreRecord
+// accepts. Returns the root, which the caller points CLAUDE_SESSION_NAMER_APP_STORE at.
+function fakeAppStore(entries = {}) {
+  const root = tmpDir();
+  let i = 0;
+  for (const [cliSessionId, spec] of Object.entries(entries)) appStoreRecord(root, cliSessionId, spec, i++);
+  return root;
+}
+
+module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig, fakeAppStore, appStoreRecord };

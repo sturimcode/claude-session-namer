@@ -14,7 +14,7 @@ A Stop hook fires after each of your turns. It spawns a detached background work
 
 Re-titling is growth-gated. The first title lands after your first exchange. After that, a session is re-checked when its user-turn count roughly doubles: a 100-turn session gets about 5 checks, not 100. If the current title still fits, the model answers `KEEP` and nothing is written.
 
-Titles you set through `rename` or `protect` are never overwritten. Those mark the session as yours and the tool stops touching it. A title you type in the app UI is a different story: Claude Code writes its own auto-titles into the transcript the same way it writes your renames, so there is no way to tell them apart after the fact. Those are protected heuristically - the model is told to keep a title that reads like a deliberate label rather than a description of the work. Run `protect <session-id>` when you want a guarantee.
+Titles you set through `rename` or `protect` are never overwritten. Those mark the session as yours and the tool stops touching it. A name you type in the desktop app UI is protected too, on macOS: the app records in its own session store whether a title came from you or from its auto-titler, and the tool reads that marker before every decision. The transcript can't show it - Claude Code writes its own auto-titles as the same record type your renames produce - so the app's store is the only place that fact lives. Off macOS, or for a session the desktop app has never opened, the marker isn't there; `protect <session-id>` is the guarantee that works everywhere.
 
 ## Install
 
@@ -46,6 +46,7 @@ unprotect <session-id>               Let the tool re-title it again
 list [--project <path>]              List recent sessions with titles
 search <query>                       Find sessions by title or content
 config [prefix on|off]               Show or change settings
+sync-plan [--all]                    Print the titles the app sidebar is missing
 ```
 
 Preview a backfill before running it:
@@ -56,7 +57,7 @@ claude-session-namer backfill --dry-run
 
 `--dry-run` writes nothing, but it still calls the model once per eligible session, so it costs the same as the real run. `--model` defaults to `haiku`. `--project` takes either a path or the encoded directory name that `list` prints. Sessions touched in the last 10 minutes are skipped as probably still open.
 
-`rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did. `list` marks a locked session with a trailing `[protected]`, which is the only place that lock is visible.
+`rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did. `list` marks a locked session with a trailing `[protected]` and a session you renamed in the desktop app with `[renamed in app]`; a session can carry both, and neither is visible anywhere else.
 
 ## Prefixes
 
@@ -77,6 +78,23 @@ claude-session-namer config prefix off
 
 Or install with `--no-prefix`. `config` with no arguments prints the current setting.
 
+## Desktop app sidebar
+
+The desktop app's sidebar doesn't read the transcript. It reads the app's own registry - one JSON file per session under `~/Library/Application Support/Claude` - so titles written here show up in the CLI (`list`, the resume picker, `--resume`) but don't reach the app sidebar on their own.
+
+`sync-plan` computes what would close that gap. For each session the app knows about, it compares the title in the app's registry against the current title in the transcript, and prints one JSON line per session that differs:
+
+```
+$ claude-session-namer sync-plan
+{"sessionId":"local_a1b2c3","currentTitle":"New session","newTitle":"[Emails] SES bounce triage"}
+```
+
+`currentTitle` is null when the app has no name for the session yet.
+
+The command writes nothing - not to the app, not to your transcripts. Applying the plan takes something that can call the app's session-rename API: a scheduled Claude session, or any agent with that tool, fed this output. Nothing to push means no output.
+
+Sessions you renamed in the app yourself are left out. `--all` puts them back in, and that is the only thing it does: it lets a push overwrite a name you typed in the app. It does not help with the opposite case, where the app is showing a good name and the transcript is still on a vague one - there is no diff to push there, and `rename <session-id> "title"` is the fix.
+
 ## Cost
 
 A few haiku calls per session, run through your existing Claude subscription via the `claude` CLI. No API key, no separate billing. A backfill over ~400 sessions is roughly 350 model calls and about 30 minutes - it runs sequentially with a throttle between calls.
@@ -91,7 +109,9 @@ Read these before installing.
 
 **macOS and Linux.** Windows is untested - the hook installs as a `/bin/sh` wrapper.
 
-**A title you type in the app can be overwritten.** Claude Code writes its own auto-generated titles into the transcript as the same record type your renames produce, and re-writes them as a session grows, so nothing in the file distinguishes the two. Re-titling those auto-titles is the point of this tool, so it cannot skip them - which means a name you typed in the app UI is protected only by heuristics: the model is told to answer `KEEP` when the current title reads like a deliberate label (a person's name, a date, "Revisit Monday") and when it already describes the conversation. That is not a guarantee. `rename` and `protect` are - both mark the session yours in the tool's own state, and the tool stops touching it until you run `unprotect`.
+**A title you type in the app is detected on macOS, and only there.** Nothing in the transcript distinguishes a name you typed from one Claude Code generated - both are the same record type, and the app re-writes its own as a session grows. The desktop app does record the difference, in its own session store under `~/Library/Application Support/Claude`: each session is tagged as titled by you or by the app. The tool reads that tag and never re-titles a session tagged as yours. Where the tag isn't there - Linux, no desktop app installed, a session the app has never opened, or a session file written by an older app build that predates the tag (6 of 234 files on the author's machine) - a name you typed is protected only by heuristics: the model is told to answer `KEEP` when the current title reads like a deliberate label (a person's name, a date, "Revisit Monday") and when it already describes the conversation. That is not a guarantee. `rename` and `protect` are - both mark the session yours in the tool's own state, and the tool stops touching it until you run `unprotect`. The tool only reads the app's store, never writes to it.
+
+The trade-off of that protection: a session tagged as renamed by you keeps whatever title its transcript already carries on the CLI side, because the tool stops writing to it. The app stores your name in its own registry and doesn't always push it back into the transcript, so if it never reached the transcript, `list` and the resume picker keep showing the old or vague name while the app sidebar shows yours. `rename <session-id> "title"` is the way out - it writes the name into the transcript and keeps the session locked.
 
 **Don't export `CLAUDE_SESSION_NAMER_WORKER` in the shell that launches Claude Code.** That variable is the recursion guard - the worker sets it on its own `claude -p` call so the resulting Stop hook doesn't spawn another worker. If it is already set in your environment, titling silently does nothing.
 

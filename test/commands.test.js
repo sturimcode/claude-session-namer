@@ -9,11 +9,19 @@ const fx = require('./fixtures');
 // `claude -p` from the OS temp dir. realpath matters on macOS, where /var is a symlink.
 const tmpProjectName = () => fs.realpathSync(os.tmpdir()).replace(/[^a-zA-Z0-9]/g, '-');
 
-function fresh() {
+// appStore maps cliSessionId -> 'user' | 'auto' | null. Each run gets its own store, empty by
+// default, so no test reads the real desktop app store on the machine running the suite.
+function fresh(appStore = {}) {
   const { configDir, projectDir } = fx.fakeConfig();
   process.env.CLAUDE_CONFIG_DIR = configDir;
-  for (const m of ['../src/paths', '../src/state', '../src/worker', '../src/commands']) delete require.cache[require.resolve(m)];
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = fx.fakeAppStore(appStore);
+  for (const m of ['../src/paths', '../src/state', '../src/appstore', '../src/worker', '../src/commands']) delete require.cache[require.resolve(m)];
   return { commands: require('../src/commands'), projectDir, configDir };
+}
+
+// A store dir that was never created at all - the Linux, Windows, and CLI-only case.
+function noAppStore() {
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = path.join(fx.tmpDir(), 'no-such-store');
 }
 
 // Swaps both streams so a command's stdout and its usage errors can be asserted separately.
@@ -270,6 +278,44 @@ test('list marks protected sessions and leaves the rest unmarked', async () => {
   assert.ok(after.find((l) => l.includes('aaa11111')).endsWith('[Emails] SES fix'));
 });
 
+// The desktop app records a title typed in its UI as titleSource 'user'. Those sessions are never
+// re-titled, so the listing has to say why - otherwise a user sees a session the tool silently
+// never touches and has no idea it is spoken for.
+test('list marks sessions renamed in the desktop app', async () => {
+  const renamed = 'aaa11111-1111-1111-1111-111111111111';
+  const auto = 'bbb22222-2222-2222-2222-222222222222';
+  const unknown = 'ccc33333-3333-3333-3333-333333333333';
+  const { commands, projectDir } = fresh({ [renamed]: 'user', [auto]: 'auto' });
+  fx.writeTranscript(projectDir, renamed, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', renamed)]);
+  fx.writeTranscript(projectDir, auto, [fx.userEntry('about figma'), fx.titleEntry('[CP] Experts tab', auto)]);
+  fx.writeTranscript(projectDir, unknown, [fx.userEntry('about nexus'), fx.titleEntry('[Nexus] Disclaimers', unknown)]);
+  const lines = (await capture(() => commands.list([]))).trim().split('\n');
+  assert.ok(lines.find((l) => l.includes('aaa11111')).endsWith('Revisit Monday [renamed in app]'), lines.join('\n'));
+  assert.ok(lines.find((l) => l.includes('bbb22222')).endsWith('[CP] Experts tab'), lines.join('\n'));
+  assert.ok(lines.find((l) => l.includes('ccc33333')).endsWith('[Nexus] Disclaimers'), lines.join('\n'));
+});
+
+// Both marks can be true of one session, and each says something the other doesn't: one is a lock
+// the user set here, the other is a name they typed in the app.
+test('a session both protected and renamed in the app carries both marks', async () => {
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [id]: 'user' });
+  fx.writeTranscript(projectDir, id, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', id)]);
+  await capture(() => commands.protect([id]));
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.trim().endsWith('Revisit Monday [protected] [renamed in app]'), out);
+});
+
+// No app store means no signal, on Linux, on Windows, or on a machine that has only run the CLI.
+// The listing still works and nothing is marked.
+test('list works with no desktop app store present', async () => {
+  const { commands, projectDir } = fresh();
+  noAppStore();
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x'), fx.titleEntry('[Emails] SES fix', 'aaa11111-1111-1111-1111-111111111111')]);
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.trim().endsWith('[Emails] SES fix'), out);
+});
+
 test('list is newest first and caps at 50', async () => {
   const { commands, projectDir } = fresh();
   for (let i = 0; i < 55; i++) {
@@ -462,6 +508,19 @@ test('backfill dry-run titles vague sessions without writing', async () => {
   assert.equal(t.currentTitle(t.readEntries(file)), null);
 });
 
+// Backfill counts anything that isn't a title it wrote as skipped, so the app-rename protection
+// carries over to the sweep without backfill knowing the action exists.
+test('backfill leaves a session renamed in the desktop app alone', async () => {
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [id]: 'user' });
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  const out = await capture(() => commands.backfill([], { runner: () => { throw new Error('must not call the model'); } }));
+  assert.ok(out.includes('0 session(s) titled, 1 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
 test('backfill skips its own worker transcripts by prompt signature', async () => {
   const { commands, projectDir } = fresh();
   const { PROMPT_SIGNATURE } = require('../src/titler');
@@ -554,4 +613,102 @@ test('backfill passes the requested model through to the runner', async () => {
   const seen = [];
   await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
   assert.deepEqual(seen, ['sonnet']);
+});
+
+// sync-plan
+//
+// The desktop app's sidebar reads the app's own registry, not the transcript, so a title we wrote
+// never reaches it on its own. This command computes the diff between the two for an agent holding
+// the app's session-rename tool to apply. It writes nothing itself, and its output is machine-read,
+// so stdout carries JSON lines and nothing else.
+
+const AUTO = 'aaa11111-1111-1111-1111-111111111111';
+const USER = 'bbb22222-2222-2222-2222-222222222222';
+const jsonLines = (out) => out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('sync-plan emits a diff for a session the app titled itself', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [
+    { sessionId: 'local_aaa', currentTitle: 'New session', newTitle: '[Emails] SES bounce triage' },
+  ]);
+});
+
+// A name the user typed in the app is theirs, and pushing our title over it is the one thing this
+// command must never cause. --all is the deliberate opt-out.
+test('sync-plan excludes user-renamed sessions unless --all is passed', async () => {
+  const store = {
+    [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' },
+    [USER]: { sessionId: 'local_bbb', title: 'Revisit Monday', titleSource: 'user' },
+  };
+  const { commands, projectDir } = fresh(store);
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  fx.writeTranscript(projectDir, USER, [fx.userEntry('what did we decide on aliases'), fx.titleEntry('[Emails] Alias domain split', USER)]);
+
+  const plain = jsonLines(await capture(() => commands['sync-plan']([])));
+  assert.deepEqual(plain.map((r) => r.sessionId), ['local_aaa']);
+
+  const all = jsonLines(await capture(() => commands['sync-plan'](['--all'])));
+  assert.deepEqual(all.map((r) => r.sessionId).sort(), ['local_aaa', 'local_bbb']);
+  assert.deepEqual(all.find((r) => r.sessionId === 'local_bbb'), {
+    sessionId: 'local_bbb', currentTitle: 'Revisit Monday', newTitle: '[Emails] Alias domain split',
+  });
+});
+
+// The store can hold more than one record for the same session - the app writes a fresh file when it
+// re-registers a session, and the older one stays behind. If any of them says the user typed the
+// name, the name is theirs: excluding only the record that carries the marker would still emit a
+// push against its sibling and overwrite what they typed.
+test('sync-plan excludes a session the user renamed even when the store also holds an auto record for it', async () => {
+  const { commands, projectDir } = fresh({ [USER]: { sessionId: 'local_bbb', title: 'Revisit Monday', titleSource: 'user' } });
+  fx.appStoreRecord(process.env.CLAUDE_SESSION_NAMER_APP_STORE, USER, { sessionId: 'local_bbb_old', title: 'New session', titleSource: 'auto' }, 'dup');
+  fx.writeTranscript(projectDir, USER, [fx.userEntry('what did we decide on aliases'), fx.titleEntry('[Emails] Alias domain split', USER)]);
+
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+
+  const all = jsonLines(await capture(() => commands['sync-plan'](['--all'])));
+  assert.deepEqual(all.map((r) => r.sessionId).sort(), ['local_bbb', 'local_bbb_old']);
+});
+
+// Nothing to push is the common case, and a push is only worth making when our title is both real
+// and different. A vague title is what the app already has.
+test('sync-plan skips matching titles, vague titles, and sessions with no transcript', async () => {
+  const same = 'ccc33333-3333-3333-3333-333333333333';
+  const vague = 'ddd44444-4444-4444-4444-444444444444';
+  const gone = 'eee55555-5555-5555-5555-555555555555';
+  const { commands, projectDir } = fresh({
+    [same]: { sessionId: 'local_ccc', title: '[Emails] SES bounce triage', titleSource: 'auto' },
+    [vague]: { sessionId: 'local_ddd', title: 'Something else', titleSource: 'auto' },
+    [gone]: { sessionId: 'local_eee', title: 'Whatever', titleSource: 'auto' },
+  });
+  fx.writeTranscript(projectDir, same, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', same)]);
+  fx.writeTranscript(projectDir, vague, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('New session', vague)]);
+  // `gone` has a store record but no transcript on this machine at all
+  const { out, code } = await exitCodeOf(() => commands['sync-plan']([]));
+  assert.equal(out, '');
+  assert.ok(code === undefined || code === 0, `exit code ${code}`);
+});
+
+// A transcript with no title record yet has nothing to push either.
+test('sync-plan skips a session with no title in the transcript', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.assistantEntry('checking')]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+// No store is the Linux, Windows, and CLI-only case - an empty plan, not an error.
+test('sync-plan prints nothing with no desktop app store present', async () => {
+  const { commands, projectDir } = fresh();
+  noAppStore();
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+test('sync-plan rejects an unknown flag', async () => {
+  const { commands } = fresh();
+  const { out, err, code } = await exitCodeOf(() => commands['sync-plan'](['--push']));
+  assert.equal(out, '');
+  assert.match(err, /Unknown option: --push/);
+  assert.equal(code, 1);
 });

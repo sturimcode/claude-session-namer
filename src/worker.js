@@ -43,9 +43,8 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   if (!needsFirst && !needsRecheck) {
     // Sessions that arrived already titled (by the app's own title record, usually) have no
     // baseline yet - set one here so drift tracking measures growth from now, not from turn
-    // zero. A still-vague
-    // session gets no baseline: lastTryTurns is its tracker, and a baseline here would gate
-    // out every later attempt and strand the session untitled.
+    // zero. A still-vague session gets no baseline: lastTryTurns is its tracker, and a baseline
+    // here would gate out every later attempt and strand the session untitled.
     if (!vague && sess.lastCheckTurns === 0) { sess.lastCheckTurns = turns; if (!dryRun) stateMod.save(s); }
     return { action: 'no-check-needed' };
   }
@@ -95,13 +94,16 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   if (freshSess.manual) return { action: 'manual-skip' };
   const freshEntries = t.readEntries(transcriptPath);
   const freshInfo = t.titleInfo(freshEntries);
-  const startedWith = info.source === 'custom' ? info.title : null;
-  // A custom-title that wasn't there on the first read appeared while we were blocked. Drop the
-  // title we asked for rather than append after it - if a user typed that name seconds ago, ours
-  // would take it straight back off them. Nothing is marked or recorded: the new title may just as
-  // easily be the app re-asserting its own auto-title, so the next Stop event judges it afresh
-  // through the normal flow. Titles that are ours, or vague, or already present on the first read
-  // are not new arrivals and don't trigger this.
+  // The string is what identifies a title, not the record carrying it: the app re-asserts a title
+  // it already has by writing it again as a custom-title, so the same name can change record type
+  // between the two reads. An identical string is never a new arrival.
+  const startedWith = info.title;
+  // A different, non-vague custom-title appeared while we were blocked - either the app minting a
+  // new auto-title or a human renaming the session. Drop the title we asked for rather than append
+  // after it, because if a user typed that name seconds ago ours would take it straight back off
+  // them. Nothing is marked or recorded: the app's own new auto-title is just as likely, so the
+  // next Stop event judges it afresh through the normal flow. Titles that are ours, or vague, or
+  // the same string the session already had are not new arrivals and don't trigger this.
   if (
     freshInfo.source === 'custom'
     && freshInfo.title !== startedWith

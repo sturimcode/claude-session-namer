@@ -68,11 +68,14 @@ const sanitizeTitle = (s) => String(s == null ? '' : s)
 
 // The date is the user's, not UTC - a session from last night shouldn't read as tomorrow.
 // en-CA gives the ISO-shaped YYYY-MM-DD everyone can sort by eye.
-const line = (mtime, sessionId, title) =>
-  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${sanitizeTitle(title) || '(untitled)'}\n`;
+// Protection is a state fact, not part of the title, so it arrives as its own argument and is
+// appended after the title has been sanitized - a marker built into the title string would be
+// flattened along with it.
+const line = (mtime, sessionId, title, isProtected = false) =>
+  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${sanitizeTitle(title) || '(untitled)'}${isProtected ? ' [protected]' : ''}\n`;
 
-// Sessions touched in the last 10 minutes are probably still open - titling one would race the
-// app's own writes, and the Stop hook will get to it anyway.
+// Sessions touched in the last 10 minutes are probably still open, which means a Stop-hook worker
+// of their own is already handling them - a sweep would only race that worker for the same job.
 const ACTIVE_WINDOW_MS = 10 * 60_000;
 
 // Five dead invocations in a row is a broken `claude` binary, an expired login, or a rate limit -
@@ -227,8 +230,12 @@ async function rename(argv) {
 
 async function list(argv) {
   if (badProject(argv)) return;
+  // Protection lives only in state - nothing in the transcript shows it - so the listing is the
+  // only place a user can see which sessions the tool has stopped re-titling. Read state once.
+  const { sessions: known } = stateMod.load();
   for (const sess of sessions(opt(argv, '--project')).slice(0, 50)) {
-    process.stdout.write(line(sess.mtime, sess.sessionId, titleOf(sess.file)));
+    const entry = known[sess.sessionId];
+    process.stdout.write(line(sess.mtime, sess.sessionId, titleOf(sess.file), Boolean(entry && entry.manual)));
   }
 }
 

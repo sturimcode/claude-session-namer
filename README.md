@@ -56,7 +56,7 @@ claude-session-namer backfill --dry-run
 
 `--dry-run` writes nothing, but it still calls the model once per eligible session, so it costs the same as the real run. `--model` defaults to `haiku`. `--project` takes either a path or the encoded directory name that `list` prints. Sessions touched in the last 10 minutes are skipped as probably still open.
 
-`rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did.
+`rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did. `list` marks a locked session with a trailing `[protected]`, which is the only place that lock is visible.
 
 ## Prefixes
 
@@ -93,7 +93,7 @@ Read these before installing.
 
 **A title you type in the app can be overwritten.** Claude Code writes its own auto-generated titles into the transcript as the same record type your renames produce, and re-writes them as a session grows, so nothing in the file distinguishes the two. Re-titling those auto-titles is the point of this tool, so it cannot skip them - which means a name you typed in the app UI is protected only by heuristics: the model is told to answer `KEEP` when the current title reads like a deliberate label (a person's name, a date, "Revisit Monday") and when it already describes the conversation. That is not a guarantee. `rename` and `protect` are - both mark the session yours in the tool's own state, and the tool stops touching it until you run `unprotect`.
 
-**A re-title on a session you are still using may not stick.** While a session is open, the app periodically re-asserts its own cached title, which lands after ours and wins. The title settles once the session goes idle, and `backfill` only sweeps sessions untouched for 10 minutes for this reason.
+**Re-titling a session you are still using works.** A live session adopts the newest title record, so a re-title applies immediately, and the app's periodic re-writes then re-assert our title rather than its own.
 
 **Don't export `CLAUDE_SESSION_NAMER_WORKER` in the shell that launches Claude Code.** That variable is the recursion guard - the worker sets it on its own `claude -p` call so the resulting Stop hook doesn't spawn another worker. If it is already set in your environment, titling silently does nothing.
 

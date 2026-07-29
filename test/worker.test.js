@@ -67,7 +67,7 @@ test('a foreign custom-title is drift-tracked, not manual-locked', () => {
   assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
 });
 
-test('a custom-title we wrote ourselves is not treated as manual', () => {
+test('our own title, read back as a custom-title, still drift-rechecks', () => {
   const { worker, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
@@ -183,7 +183,8 @@ test('recovers from a crash between the transcript record and the final save', (
   state.session(s, 's1').written.push('[Emails] SES triage');
   state.save(s);
   t.appendTitleRecord(file, 's1', '[Emails] SES triage');
-  // the claim is on record, so our own title never reads as a human's
+  // the claim is on record and survived the crash, so the title still reads as ours on the next
+  // run - the session picks up its drift baseline and carries on rather than starting over
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
   assert.equal(state.load().sessions.s1.manual, false);
 });
@@ -220,7 +221,8 @@ test('a dry run never writes state', () => {
 
 // `claude -p` blocks for up to 90 seconds. Another worker that finishes inside that window saves
 // state of its own, and a stale in-memory copy written afterwards erases it - including a `written`
-// claim, whose loss makes our own title read as a human's and marks that session manual forever.
+// claim. Lose that claim and our own title stops reading as ours: the app re-asserting it mid-
+// generate looks like a title someone else just set, and the re-title is abandoned for nothing.
 test('a concurrent state write during generation is not lost', () => {
   const { worker, state, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
@@ -308,6 +310,25 @@ test('the mid-generate re-check ignores the vague title the session started with
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
   assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES triage');
   assert.equal(state.load().sessions.s1.manual, false);
+});
+
+// The app re-asserts a title it already has by writing it again as a `custom-title` record, so the
+// same string can change record type under us mid-generate. An identical string is never a new
+// arrival, whatever record carries it - only a genuinely different title is.
+test('an ai-title re-asserted as an identical custom-title mid-generate is not a new arrival', () => {
+  const { worker, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('Spending analysis review')]);
+  // baseline set from the ai-title, no LLM call
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('Spending analysis review')]);
+  const runner = () => {
+    // the app re-asserts the same title it already showed, this time as a custom-title record
+    t.appendTitleRecord(file2, 's1', 'Spending analysis review');
+    return '[Emails] SES bounce triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
 });
 
 // The kept title is what the session is left with. A title that reads vague is not one, even when

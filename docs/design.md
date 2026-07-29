@@ -52,7 +52,7 @@ The worker owns all logic:
   - The drift check is KEEP-biased, and the prompt tells the model to output `KEEP` when the current title reads like a deliberate personal label (a person's name, a date, a note like 'Revisit Monday') rather than a description of the work.
   - `rename` and `protect` set the manual flag in state. That is permanent until `unprotect`, and it is the only guarantee on offer.
 - **App auto-titles are replaceable, by design.** Replacing them is the product. Known-vague titles ('New session', truncated first-message titles) are fair game for the same reason.
-- **Live sessions re-assert their own title.** Because the app rewrites its cached title into the transcript every few turns while a session is in use, a drift re-title on a session mid-conversation can be displaced by the app's next write until the session goes idle. Backfill targets idle sessions, where our record is the last one written and stays that way.
+- **Live sessions adopt the newest title record.** The app does re-write the title into the transcript every few turns while a session is in use, but what it re-writes is whatever the last `custom-title` record says - it adopts, it doesn't displace (verified on live desktop data). So a re-title on a session still in use applies immediately and then gets echoed back by the app's own writes, which duplicate our string rather than compete with it; the `written` list in state already recognizes those echoes as ours. Backfill skips sessions touched in the last 10 minutes for an unrelated reason: those sessions have a Stop-hook worker of their own, and a sweep would race it.
 
 ### Title format
 
@@ -65,7 +65,7 @@ The worker owns all logic:
 - `rename <session-id> "title"` - set a title by hand, marked manual
 - `protect <session-id>` - mark a session manual without touching its title, so whatever it is named now stays
 - `unprotect <session-id>` - drop the manual mark and let drift re-titling resume
-- `list [--project <path>]` - sessions with titles, newest first
+- `list [--project <path>]` - sessions with titles, newest first; protected sessions carry a trailing `[protected]`
 - `search <query>` - match against titles and transcript content
 
 ## State

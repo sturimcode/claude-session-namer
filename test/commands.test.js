@@ -252,6 +252,24 @@ test('list prints titles, search filters', async () => {
   assert.ok(!found.includes('aaa11111'));
 });
 
+// Protection is invisible in the transcript - state is the only place it lives - so `list` is the
+// only way a user can see which sessions the tool has stopped touching.
+test('list marks protected sessions and leaves the rest unmarked', async () => {
+  const { commands, projectDir } = fresh();
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about ses bounces'), fx.titleEntry('[Emails] SES fix', 'aaa11111-1111-1111-1111-111111111111')]);
+  fx.writeTranscript(projectDir, 'bbb22222-2222-2222-2222-222222222222', [fx.userEntry('about figma'), fx.titleEntry('[CP] Experts tab', 'bbb22222-2222-2222-2222-222222222222')]);
+  await capture(() => commands.protect(['aaa11111']));
+  const lines = (await capture(() => commands.list([]))).trim().split('\n');
+  const protectedLine = lines.find((l) => l.includes('aaa11111'));
+  const plainLine = lines.find((l) => l.includes('bbb22222'));
+  assert.ok(protectedLine.endsWith('[Emails] SES fix [protected]'), protectedLine);
+  assert.ok(plainLine.endsWith('[CP] Experts tab'), plainLine);
+  // and it comes back off with unprotect
+  await capture(() => commands.unprotect(['aaa11111']));
+  const after = (await capture(() => commands.list([]))).trim().split('\n');
+  assert.ok(after.find((l) => l.includes('aaa11111')).endsWith('[Emails] SES fix'));
+});
+
 test('list is newest first and caps at 50', async () => {
   const { commands, projectDir } = fresh();
   for (let i = 0; i < 55; i++) {

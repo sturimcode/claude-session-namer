@@ -33,9 +33,11 @@ function session(s, id) {
   return s.sessions[id];
 }
 
+// The written list is a set, not a log - the worker claims a title here before writing it to the
+// transcript, and re-titling with the same string must not grow the list without bound.
 function recordTitle(s, id, title, turns) {
   const sess = session(s, id);
-  sess.written.push(title);
+  if (!sess.written.includes(title)) sess.written.push(title);
   sess.lastCheckTurns = turns;
   const m = title.match(/^\[([^\]]+)\]/);
   if (m) s.prefixes[m[1]] = (s.prefixes[m[1]] || 0) + 1;

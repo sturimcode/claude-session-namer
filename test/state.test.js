@@ -58,3 +58,22 @@ test('recordTitle tracks written titles and prefix counts', () => {
   assert.equal(s.prefixes['Emails'], 2);
   assert.deepEqual(state.topPrefixes(s, 1), ['Emails']);
 });
+
+test('recordTitle does not re-push a title already claimed', () => {
+  const state = freshState();
+  const s = state.load();
+  state.session(s, 'abc').written.push('[Emails] SES bounce fix');
+  state.recordTitle(s, 'abc', '[Emails] SES bounce fix', 5);
+  assert.deepEqual(s.sessions.abc.written, ['[Emails] SES bounce fix']);
+  assert.equal(s.sessions.abc.lastCheckTurns, 5);
+  assert.equal(s.prefixes['Emails'], 1);
+});
+
+test('session() leaves lazily added fields intact across a save/load', () => {
+  const state = freshState();
+  const s = state.load();
+  state.session(s, 'abc').lastTryTurns = 4;
+  state.save(s);
+  const reloaded = state.load();
+  assert.equal(state.session(reloaded, 'abc').lastTryTurns, 4);
+});

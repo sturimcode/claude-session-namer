@@ -66,7 +66,9 @@ test('non-vague ai-title is not manual-protected and drift-rechecks', () => {
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2); // drift baseline set without an LLM call
   // at 2x growth the ai-title gets drift-rechecked like any derived title
   const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('Spending analysis review')]);
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => 'KEEP' }).action, 'kept');
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => 'KEEP' });
+  assert.equal(res.action, 'kept');
+  assert.equal(res.title, 'Spending analysis review'); // the kept result carries the title that was kept
 });
 
 test('vague custom-title (New session) is fair game', () => {
@@ -75,14 +77,101 @@ test('vague custom-title (New session) is fair game', () => {
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
 });
 
-test('KEEP on a still-untitled session does not suppress the next attempt', () => {
+test('KEEP on a still-untitled session retries once the conversation moves, not before', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }).action, 'kept');
+  // the KEEP is recorded as a try, not as a drift baseline
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 0);
+  assert.equal(state.load().sessions.s1.lastTryTurns, 2);
+  // same turn count, so nothing new to go on - don't spend another call
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
+  // one more turn of signal and it tries again
+  file = fx.writeTranscript(projectDir, 's1', chat(3));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 3);
+});
+
+test('a crash while writing the transcript record leaves the title claimed in state', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const real = t.appendTitleRecord;
+  t.appendTitleRecord = () => { throw new Error('disk died'); };
+  try {
+    assert.throws(() => worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }));
+  } finally { t.appendTitleRecord = real; }
+  assert.deepEqual(state.load().sessions.s1.written, ['[Emails] SES triage']);
+  assert.equal(state.load().sessions.s1.manual, false);
+});
+
+test('recovers from a crash between the state claim and the transcript record', () => {
   const { worker, state, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }).action, 'kept');
-  assert.equal(state.session(state.load(), 's1').lastCheckTurns, 0);
-  // next Stop event on the same still-vague session tries again
+  const s = state.load();
+  state.session(s, 's1').written.push('[Emails] SES triage');
+  state.save(s);
+  // the title never reached the transcript, so the session is still untitled - re-title it
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.manual, false);
+  // and the repeat claim doesn't grow the written list
+  assert.deepEqual(state.load().sessions.s1.written, ['[Emails] SES triage']);
+});
+
+test('recovers from a crash between the transcript record and the final save', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const s = state.load();
+  state.session(s, 's1').written.push('[Emails] SES triage');
+  state.save(s);
+  t.appendTitleRecord(file, 's1', '[Emails] SES triage');
+  // the claim is on record, so our own title never reads as a human's
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.manual, false);
+});
+
+test('a transcript that shrank drops its stale baseline and is titled fresh', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(10));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 10);
+  // the transcript is rewritten shorter and the title record is gone with it
+  file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] Shorter thread' }).action, 'titled');
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+});
+
+test('a dry run never writes state', () => {
+  const { worker, projectDir } = setup();
+  const stateFile = require('../src/paths').stateFile();
+  const runner = () => '[X] Nope';
+  // human-titled session - would otherwise persist manual = true
+  const f1 = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('My hand-written name')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: f1, dryRun: true, runner }).action, 'manual-skip');
+  // already-titled session inside the gate - would otherwise persist the drift baseline
+  const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.aiTitleEntry('Spending analysis review', 's2')]);
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: f2, dryRun: true, runner }).action, 'no-check-needed');
+  // untitled session drawing a KEEP - would otherwise persist lastTryTurns
+  const f3 = fx.writeTranscript(projectDir, 's3', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's3', transcriptPath: f3, dryRun: true, runner: () => 'KEEP' }).action, 'kept');
+  // untitled session drawing a title
+  const f4 = fx.writeTranscript(projectDir, 's4', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's4', transcriptPath: f4, dryRun: true, runner }).action, 'dry-run');
+  assert.equal(require('node:fs').existsSync(stateFile), false);
+});
+
+test('parseArgs reads flags in any order and tolerates missing values', () => {
+  const { worker } = setup();
+  assert.deepEqual(
+    worker.parseArgs(['--transcript', '/t.jsonl', '--model', 'sonnet', '--session', 'abc']),
+    { sessionId: 'abc', transcriptPath: '/t.jsonl', model: 'sonnet' },
+  );
+  assert.deepEqual(worker.parseArgs([]), { sessionId: undefined, transcriptPath: undefined, model: undefined });
+  assert.deepEqual(worker.parseArgs(['--session', 'abc']), { sessionId: 'abc', transcriptPath: undefined, model: undefined });
+  // a trailing flag with no value yields undefined rather than throwing
+  assert.deepEqual(worker.parseArgs(['--session']), { sessionId: undefined, transcriptPath: undefined, model: undefined });
+  assert.deepEqual(worker.parseArgs(['--session', 'abc', '--model']), { sessionId: 'abc', transcriptPath: undefined, model: undefined });
 });
 
 test('empty session and dry-run', () => {

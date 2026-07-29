@@ -100,9 +100,27 @@ function buildExcerpt(entries, maxChars = 4000) {
   return out;
 }
 
+// True when the file is non-empty and its last byte is not a newline (Claude Code mid-write, or
+// a truncated file). Appending straight onto that partial line would fuse the two records and
+// lose both to readers. Any error reading the file is treated as safe-to-append.
+function needsLeadingNewline(file) {
+  let fd;
+  try {
+    const { size } = fs.statSync(file);
+    if (size === 0) return false;
+    const buf = Buffer.alloc(1);
+    fd = fs.openSync(file, 'r');
+    fs.readSync(fd, buf, 0, 1, size - 1);
+    return buf[0] !== 0x0a;
+  } catch { return false; } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+}
+
 // Single atomic append - the app tails the transcript, so the line must be written whole
 function appendTitleRecord(file, sessionId, title) {
-  fs.appendFileSync(file, JSON.stringify({ type: 'custom-title', customTitle: title, sessionId }) + '\n');
+  const record = JSON.stringify({ type: 'custom-title', customTitle: title, sessionId }) + '\n';
+  fs.appendFileSync(file, needsLeadingNewline(file) ? '\n' + record : record);
 }
 
 module.exports = { readEntries, titleInfo, currentTitle, appendTitleRecord, userText, assistantText, countUserTurns, firstUserText, isVagueTitle, buildExcerpt };

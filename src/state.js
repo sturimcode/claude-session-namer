@@ -3,19 +3,27 @@ const paths = require('./paths');
 
 const DEFAULT = () => ({ sessions: {}, prefixes: {} });
 
-// A missing or corrupt state file is never fatal - the tool starts over from defaults
+const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// A missing, corrupt, or wrong-shaped state file is never fatal - the tool starts over from
+// defaults. Valid JSON with the wrong types (eg {"sessions":"oops"}) would otherwise throw
+// downstream, so each field is type-checked rather than just null-checked.
 function load() {
   try {
     const s = JSON.parse(fs.readFileSync(paths.stateFile(), 'utf8'));
-    if (!s || typeof s !== 'object') return DEFAULT();
-    return { sessions: s.sessions || {}, prefixes: s.prefixes || {} };
+    if (!isPlainObject(s)) return DEFAULT();
+    return {
+      sessions: isPlainObject(s.sessions) ? s.sessions : {},
+      prefixes: isPlainObject(s.prefixes) ? s.prefixes : {},
+    };
   } catch { return DEFAULT(); }
 }
 
-// Write to a tmp file and rename so a crash mid-write can't leave a half-written state file
+// Write to a tmp file and rename so a crash mid-write can't leave a half-written state file.
+// The tmp name carries the pid so concurrent hook processes can't clobber each other's write.
 function save(s) {
   fs.mkdirSync(paths.stateDir(), { recursive: true });
-  const tmp = paths.stateFile() + '.tmp';
+  const tmp = paths.stateFile() + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
   fs.renameSync(tmp, paths.stateFile());
 }
@@ -44,7 +52,7 @@ function loadConfig() {
 
 function saveConfig(c) {
   fs.mkdirSync(paths.stateDir(), { recursive: true });
-  const tmp = paths.configFile() + '.tmp';
+  const tmp = paths.configFile() + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(c, null, 2));
   fs.renameSync(tmp, paths.configFile());
 }

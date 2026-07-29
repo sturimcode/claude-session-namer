@@ -26,6 +26,20 @@ test('load returns default on corrupt file', () => {
   assert.deepEqual(state.load(), { sessions: {}, prefixes: {} });
 });
 
+test('load defaults wrong-typed fields to empty objects', () => {
+  const state = freshState();
+  const paths = require('../src/paths');
+  require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
+  require('node:fs').writeFileSync(paths.stateFile(), '{"sessions":"oops"}');
+  const s = state.load();
+  assert.deepEqual(s, { sessions: {}, prefixes: {} });
+  state.session(s, 'x').lastCheckTurns = 1;
+  assert.equal(s.sessions.x.lastCheckTurns, 1);
+
+  require('node:fs').writeFileSync(paths.stateFile(), '{"sessions":{},"prefixes":[1,2]}');
+  assert.deepEqual(state.load(), { sessions: {}, prefixes: {} });
+});
+
 test('loadConfig defaults prefix to true and round-trips', () => {
   const state = freshState();
   assert.deepEqual(state.loadConfig(), { prefix: true });

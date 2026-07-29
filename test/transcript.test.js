@@ -104,7 +104,23 @@ test('appendTitleRecord appends exactly one valid line', () => {
   assert.equal(t.currentTitle(entries), '[Test] Hello session');
   const raw = require('node:fs').readFileSync(file, 'utf8');
   assert.ok(raw.endsWith('\n'));
-  assert.equal(raw.trim().split('\n').length, 2);
+  const lines = raw.trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[1]).sessionId, 's1');
+});
+
+test('appendTitleRecord recovers when the file has no trailing newline', () => {
+  const fs = require('node:fs');
+  const dir = fx.tmpDir();
+  const file = fx.writeTranscript(dir, 's1', [fx.userEntry('hello'), fx.assistantEntry('hi')]);
+  // Simulate Claude Code mid-write / a truncated file: strip the trailing newline
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/\n$/, ''));
+  t.appendTitleRecord(file, 's1', '[Test] Recovered');
+  const entries = t.readEntries(file);
+  assert.equal(t.currentTitle(entries), '[Test] Recovered');
+  // The prior entries must survive - nothing concatenated onto the partial line
+  assert.equal(t.countUserTurns(entries), 1);
+  assert.equal(entries.length, 3);
 });
 
 test('buildExcerpt includes early and late turns within cap', () => {

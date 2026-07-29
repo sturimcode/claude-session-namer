@@ -87,6 +87,36 @@ test('userRenamedIds is empty for an absent store and for a store with no rename
   assert.equal(withStore(fx.fakeAppStore({ 'sess-a': 'auto' })).userRenamedIds().size, 0);
 });
 
+// `sync-plan` needs the whole store, not one lookup: every session the app knows about, with the
+// title the app is showing and the id its own API is keyed by.
+test('entries returns one row per session record, keyed by the app id', () => {
+  const store = fx.fakeAppStore({});
+  fx.appStoreRecord(store, 'cli-a', { sessionId: 'local_aaa', title: 'App title A', titleSource: 'user' }, 'a');
+  fx.appStoreRecord(store, 'cli-b', { sessionId: 'local_bbb', title: 'App title B', titleSource: 'auto' }, 'b');
+  const rows = withStore(store).entries().sort((x, y) => x.cliSessionId.localeCompare(y.cliSessionId));
+  assert.deepEqual(rows, [
+    { daemonSessionId: 'local_aaa', cliSessionId: 'cli-a', title: 'App title A', titleSource: 'user' },
+    { daemonSessionId: 'local_bbb', cliSessionId: 'cli-b', title: 'App title B', titleSource: 'auto' },
+  ]);
+});
+
+// A record with no cliSessionId can't be matched to a transcript, so it isn't an entry. A record
+// with no titleSource reads as 'auto', the same way titleSourceFor reads it.
+test('entries skips records with no cliSessionId and reads a missing titleSource as auto', () => {
+  const store = fx.fakeAppStore({});
+  fx.appStoreRecord(store, 'cli-old', null, 'old');
+  fx.appStoreRecord(store, undefined, { title: 'Orphan' }, 'orphan');
+  fx.appStoreRecord(store, 42, { title: 'Numeric' }, 'numeric');
+  const rows = withStore(store).entries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cliSessionId, 'cli-old');
+  assert.equal(rows[0].titleSource, 'auto');
+});
+
+test('entries is empty for an absent store', () => {
+  assert.deepEqual(withStore(path.join(fx.tmpDir(), 'no-such-store')).entries(), []);
+});
+
 // An id given to us is not a path component. A store lookup must never walk out of the store.
 test('a session id that looks like a path does not escape the store', () => {
   const appstore = withStore(fx.fakeAppStore({ 'sess-user': 'user' }));

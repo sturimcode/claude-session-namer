@@ -46,6 +46,7 @@ unprotect <session-id>               Let the tool re-title it again
 list [--project <path>]              List recent sessions with titles
 search <query>                       Find sessions by title or content
 config [prefix on|off]               Show or change settings
+sync-plan [--all]                    Print the titles the app sidebar is missing
 ```
 
 Preview a backfill before running it:
@@ -76,6 +77,19 @@ claude-session-namer config prefix off
 ```
 
 Or install with `--no-prefix`. `config` with no arguments prints the current setting.
+
+## Desktop app sidebar
+
+The desktop app's sidebar doesn't read the transcript. It reads the app's own registry - one JSON file per session under `~/Library/Application Support/Claude` - so titles written here show up in the CLI (`list`, the resume picker, `--resume`) but don't reach the app sidebar on their own.
+
+`sync-plan` computes what would close that gap. For each session the app knows about, it compares the title in the app's registry against the current title in the transcript, and prints one JSON line per session that differs:
+
+```
+$ claude-session-namer sync-plan
+{"sessionId":"local_a1b2c3","currentTitle":"New session","newTitle":"[Emails] SES bounce triage"}
+```
+
+The command writes nothing - not to the app, not to your transcripts. Applying the plan takes something that can call the app's session-rename API: a scheduled Claude session, or any agent with that tool, fed this output. Sessions you renamed in the app yourself are left out; `--all` includes them. Nothing to push means no output.
 
 ## Cost
 

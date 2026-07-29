@@ -16,7 +16,7 @@ const isSessionFile = (name) => name.startsWith('local_') && name.endsWith('.jso
 
 // Returns entry names of dir, or an empty list for anything unreadable - a store that isn't there,
 // a permissions error, a file where a directory was expected.
-function entries(dir) {
+function names(dir) {
   try { return fs.readdirSync(dir); } catch { return []; }
 }
 
@@ -33,11 +33,11 @@ function readRecord(file) {
 // caller looking for one session stops the walk as soon as it finds it.
 function* records() {
   const root = paths.appStoreDir();
-  for (const outer of entries(root)) {
+  for (const outer of names(root)) {
     const outerDir = path.join(root, outer);
-    for (const inner of entries(outerDir)) {
+    for (const inner of names(outerDir)) {
       const innerDir = path.join(outerDir, inner);
-      for (const name of entries(innerDir)) {
+      for (const name of names(innerDir)) {
         if (!isSessionFile(name)) continue;
         const record = readRecord(path.join(innerDir, name));
         if (record) yield record;
@@ -75,4 +75,24 @@ function userRenamedIds() {
   return ids;
 }
 
-module.exports = { titleSourceFor, userRenamedIds };
+// The whole store in one pass, for callers that need to compare it against our own view of every
+// session rather than ask about one. `daemonSessionId` is the app's own id for the session (the
+// `sessionId` field of the file, eg 'local_...'), which is what the app's session-rename API is
+// keyed by; `cliSessionId` is the transcript id everything else here works in. A record with no
+// string cliSessionId can't be matched to a transcript, so it isn't an entry. Best-effort like
+// every other read: an absent or unreadable store yields an empty list.
+function entries() {
+  const out = [];
+  for (const record of records()) {
+    if (typeof record.cliSessionId !== 'string') continue;
+    out.push({
+      daemonSessionId: record.sessionId,
+      cliSessionId: record.cliSessionId,
+      title: typeof record.title === 'string' ? record.title : null,
+      titleSource: sourceOf(record),
+    });
+  }
+  return out;
+}
+
+module.exports = { titleSourceFor, userRenamedIds, entries };

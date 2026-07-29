@@ -259,6 +259,40 @@ async function search(argv) {
   }
 }
 
+// The desktop app's sidebar reads the app's own registry, not the transcript, so a title written
+// here never reaches it. This command computes what would have to be pushed to close that gap -
+// one JSON line per session whose transcript title differs from the name the app is showing - and
+// pushes nothing itself. An agent holding the app's session-rename tool applies the plan.
+//
+// stdout is machine-read, so it carries JSON lines and nothing else; an empty plan prints nothing
+// and exits 0. Sessions the user renamed in the app are left out by default - pushing our title
+// over a name they typed is the one thing this must never cause - and --all opts back in.
+async function syncPlan(argv) {
+  const unknown = argv.filter((a) => a !== '--all');
+  if (unknown.length) {
+    return usage(`Unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}\nUsage: claude-session-namer sync-plan [--all]\n`);
+  }
+  const includeRenamed = flag(argv, '--all');
+  // One walk of the projects tree for the whole plan - the store can hold hundreds of records, and
+  // resolving each one's transcript on its own would re-read every project dir per record.
+  const byId = new Map();
+  for (const sess of sessions()) if (!byId.has(sess.sessionId)) byId.set(sess.sessionId, sess);
+  for (const entry of appstore.entries()) {
+    if (!includeRenamed && entry.titleSource === 'user') continue;
+    // A row the app's API can't be pointed at is not actionable, whatever its title says.
+    if (typeof entry.daemonSessionId !== 'string' || !entry.daemonSessionId) continue;
+    const sess = byId.get(entry.cliSessionId);
+    if (!sess) continue; // a session the app knows about whose transcript isn't on this machine
+    const entries = t.readEntries(sess.file);
+    // Sanitized here rather than at the point of printing, so the string compared against the app's
+    // title is the same string that would be pushed - no diff that a push could never close.
+    const title = sanitizeTitle(t.titleInfo(entries).title);
+    if (!title || t.isVagueTitle(title, t.firstUserText(entries))) continue;
+    if (title === entry.title) continue;
+    process.stdout.write(JSON.stringify({ sessionId: entry.daemonSessionId, currentTitle: entry.title, newTitle: title }) + '\n');
+  }
+}
+
 async function config(argv) {
   if (argv.length === 0) {
     process.stdout.write(`prefix: ${stateMod.loadConfig().prefix ? 'on' : 'off'}\n`);
@@ -275,4 +309,5 @@ async function config(argv) {
   usage('Usage: claude-session-namer config [prefix on|off]\n');
 }
 
-module.exports = { backfill, rename, protect, unprotect, list, search, sessions, config };
+// The CLI dispatches on the command name, so the hyphenated key is the one that matters.
+module.exports = { backfill, rename, protect, unprotect, list, search, sessions, config, 'sync-plan': syncPlan };

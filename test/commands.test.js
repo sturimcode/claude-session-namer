@@ -614,3 +614,86 @@ test('backfill passes the requested model through to the runner', async () => {
   await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
   assert.deepEqual(seen, ['sonnet']);
 });
+
+// sync-plan
+//
+// The desktop app's sidebar reads the app's own registry, not the transcript, so a title we wrote
+// never reaches it on its own. This command computes the diff between the two for an agent holding
+// the app's session-rename tool to apply. It writes nothing itself, and its output is machine-read,
+// so stdout carries JSON lines and nothing else.
+
+const AUTO = 'aaa11111-1111-1111-1111-111111111111';
+const USER = 'bbb22222-2222-2222-2222-222222222222';
+const jsonLines = (out) => out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('sync-plan emits a diff for a session the app titled itself', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [
+    { sessionId: 'local_aaa', currentTitle: 'New session', newTitle: '[Emails] SES bounce triage' },
+  ]);
+});
+
+// A name the user typed in the app is theirs, and pushing our title over it is the one thing this
+// command must never cause. --all is the deliberate opt-out.
+test('sync-plan excludes user-renamed sessions unless --all is passed', async () => {
+  const store = {
+    [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' },
+    [USER]: { sessionId: 'local_bbb', title: 'Revisit Monday', titleSource: 'user' },
+  };
+  const { commands, projectDir } = fresh(store);
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  fx.writeTranscript(projectDir, USER, [fx.userEntry('what did we decide on aliases'), fx.titleEntry('[Emails] Alias domain split', USER)]);
+
+  const plain = jsonLines(await capture(() => commands['sync-plan']([])));
+  assert.deepEqual(plain.map((r) => r.sessionId), ['local_aaa']);
+
+  const all = jsonLines(await capture(() => commands['sync-plan'](['--all'])));
+  assert.deepEqual(all.map((r) => r.sessionId).sort(), ['local_aaa', 'local_bbb']);
+  assert.deepEqual(all.find((r) => r.sessionId === 'local_bbb'), {
+    sessionId: 'local_bbb', currentTitle: 'Revisit Monday', newTitle: '[Emails] Alias domain split',
+  });
+});
+
+// Nothing to push is the common case, and a push is only worth making when our title is both real
+// and different. A vague title is what the app already has.
+test('sync-plan skips matching titles, vague titles, and sessions with no transcript', async () => {
+  const same = 'ccc33333-3333-3333-3333-333333333333';
+  const vague = 'ddd44444-4444-4444-4444-444444444444';
+  const gone = 'eee55555-5555-5555-5555-555555555555';
+  const { commands, projectDir } = fresh({
+    [same]: { sessionId: 'local_ccc', title: '[Emails] SES bounce triage', titleSource: 'auto' },
+    [vague]: { sessionId: 'local_ddd', title: 'Something else', titleSource: 'auto' },
+    [gone]: { sessionId: 'local_eee', title: 'Whatever', titleSource: 'auto' },
+  });
+  fx.writeTranscript(projectDir, same, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', same)]);
+  fx.writeTranscript(projectDir, vague, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('New session', vague)]);
+  // `gone` has a store record but no transcript on this machine at all
+  const { out, code } = await exitCodeOf(() => commands['sync-plan']([]));
+  assert.equal(out, '');
+  assert.ok(code === undefined || code === 0, `exit code ${code}`);
+});
+
+// A transcript with no title record yet has nothing to push either.
+test('sync-plan skips a session with no title in the transcript', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.assistantEntry('checking')]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+// No store is the Linux, Windows, and CLI-only case - an empty plan, not an error.
+test('sync-plan prints nothing with no desktop app store present', async () => {
+  const { commands, projectDir } = fresh();
+  noAppStore();
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+test('sync-plan rejects an unknown flag', async () => {
+  const { commands } = fresh();
+  const { out, err, code } = await exitCodeOf(() => commands['sync-plan'](['--push']));
+  assert.equal(out, '');
+  assert.match(err, /Unknown option: --push/);
+  assert.equal(code, 1);
+});

@@ -73,6 +73,7 @@ The worker owns all logic:
 - `unprotect <session-id>` - drop the manual mark and let drift re-titling resume
 - `list [--project <path>]` - sessions with titles, newest first; protected sessions carry a trailing `[protected]`, sessions renamed in the desktop app a trailing `[renamed in app]`, and a session can carry both
 - `search <query>` - match against titles and transcript content
+- `sync-plan [--all]` - print, as JSON lines, the sessions whose transcript title differs from the title in the app's own registry (`{sessionId, currentTitle, newTitle}`, keyed by the app's session id). The sidebar reads that registry rather than the transcript, so a title written here never reaches it; this command computes the diff and writes nothing, leaving the push to a scheduled Claude session or any agent holding the app's session-rename tool. User-renamed sessions are excluded unless `--all` is passed.
 
 ## State
 

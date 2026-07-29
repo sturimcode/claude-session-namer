@@ -522,6 +522,24 @@ test('backfill dry-run titles vague sessions without writing', async () => {
   assert.equal(t.currentTitle(t.readEntries(file)), null);
 });
 
+// A restyle is a title the sweep wrote, so it counts and prints like any other - a user who turns
+// prefixes on and sweeps has to see which titles changed.
+test('backfill counts and prints a restyled title', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [
+    fx.userEntry('help me with ses bounces'),
+    fx.assistantEntry('sure'),
+    fx.titleEntry('SES bounce triage', id),
+  ]);
+  age(file, HOUR);
+  const out = await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce triage' }));
+  assert.ok(out.includes('[Emails] SES bounce triage'), out);
+  assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+});
+
 // Backfill counts anything that isn't a title it wrote as skipped, so the app-rename protection
 // carries over to the sweep without backfill knowing the action exists.
 test('backfill leaves a session renamed in the desktop app alone', async () => {

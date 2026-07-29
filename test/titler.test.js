@@ -85,6 +85,78 @@ test('buildPrompt appends an examples block matching the mode', () => {
   assert.ok(!off.includes('[Client Controls]'));
 });
 
+// The prefix setting is a format contract, so a title has to be checkable against it - that check is
+// what tells the worker a title is accurate but in the wrong shape.
+test('matchesFormat accepts only the prefix form when prefixes are on', () => {
+  assert.equal(titler.matchesFormat('[Emails] SES bounce fix', true), true);
+  assert.equal(titler.matchesFormat('[Client Controls] Cascade rules', true), true);
+  assert.equal(titler.matchesFormat('SES bounce fix', true), false);
+  assert.equal(titler.matchesFormat('Revisit Monday', true), false);
+  // a bracket with nothing after it is not a title in the prefix form
+  assert.equal(titler.matchesFormat('[Emails]', true), false);
+  assert.equal(titler.matchesFormat('[Emails] ', true), false);
+  // no space after the bracket, and an empty prefix
+  assert.equal(titler.matchesFormat('[Emails]SES bounce fix', true), false);
+  assert.equal(titler.matchesFormat('[] SES bounce fix', true), false);
+  // a whole title parked in brackets is not a prefix
+  assert.equal(titler.matchesFormat(`[${'a'.repeat(26)}] x`, true), false);
+  assert.equal(titler.matchesFormat(`[${'a'.repeat(25)}] x`, true), true);
+});
+
+test('matchesFormat accepts only the bare form when prefixes are off', () => {
+  assert.equal(titler.matchesFormat('SES bounce fix', false), true);
+  assert.equal(titler.matchesFormat('Revisit Monday', false), true);
+  assert.equal(titler.matchesFormat('[Emails] SES bounce fix', false), false);
+  assert.equal(titler.matchesFormat('[Emails]', false), false);
+  assert.equal(titler.matchesFormat('[] anything', false), false);
+});
+
+test('matchesFormat tolerates a missing or non-string title', () => {
+  assert.equal(titler.matchesFormat(null, true), false);
+  assert.equal(titler.matchesFormat(undefined, true), false);
+  assert.equal(titler.matchesFormat(42, true), false);
+  assert.equal(titler.matchesFormat('', true), false);
+});
+
+// Restyle mode is not a re-title: the title is right about the work, it just isn't in the shape the
+// user asked for. So the meaning is preserved and KEEP stops being an available answer - keeping the
+// title is the one thing that cannot fix its format.
+test('buildPrompt in restyle mode asks for a reformat and drops every KEEP rule', () => {
+  for (const usePrefix of [true, false]) {
+    const p = titler.buildPrompt({ currentTitle: 'SES bounce fix', prefixes: ['Emails'], excerpt: 'User: hi', usePrefix, restyle: true });
+    assert.ok(p.includes('The current title is accurate but in the wrong format - rewrite it into the required format, preserving its meaning'), `missing reformat rule, usePrefix=${usePrefix}`);
+    assert.ok(p.includes('- Never output KEEP - always output a title'), `missing never-KEEP rule, usePrefix=${usePrefix}`);
+    assert.ok(!p.includes('If the current title still accurately describes'), `drift KEEP rule present, usePrefix=${usePrefix}`);
+    assert.ok(!p.includes('deliberate personal label'), `personal-label KEEP rule present, usePrefix=${usePrefix}`);
+    assert.ok(!p.includes('output exactly: KEEP'), `a KEEP instruction survived, usePrefix=${usePrefix}`);
+    assert.ok(!p.includes('There is no current title yet'), `no-title rule present, usePrefix=${usePrefix}`);
+    // KEEP can't stand as an example of an answer it can't give
+    assert.ok(!/^KEEP$/m.test(p), `KEEP example present, usePrefix=${usePrefix}`);
+    // the title, the excerpt, and the length cap still carry
+    assert.ok(p.includes('SES bounce fix'));
+    assert.ok(p.includes('User: hi'));
+    assert.ok(p.includes('45'));
+  }
+});
+
+test('buildPrompt in restyle mode points the excerpt at the format, per mode', () => {
+  const on = titler.buildPrompt({ currentTitle: 'SES bounce fix', prefixes: ['Emails'], excerpt: 'x', restyle: true });
+  assert.ok(on.includes('- Output format: [Prefix] Short phrase'));
+  assert.ok(on.includes('- Use the conversation excerpt only to choose the right prefix - do not re-describe the work'));
+  assert.ok(on.includes('Emails')); // the learned prefixes are what it picks from
+
+  const off = titler.buildPrompt({ currentTitle: '[Emails] SES bounce fix', prefixes: ['Emails'], excerpt: 'x', usePrefix: false, restyle: true });
+  assert.ok(off.includes('- Output format: Short phrase (no prefix, no brackets)'));
+  assert.ok(off.includes('drop the prefix'));
+});
+
+test('buildPrompt without restyle is unchanged - the KEEP rules stand', () => {
+  const p = titler.buildPrompt({ currentTitle: 'SES bounce fix', prefixes: [], excerpt: 'x' });
+  assert.ok(p.includes('If the current title still accurately describes'));
+  assert.ok(!p.includes('rewrite it into the required format'));
+  assert.ok(/^KEEP$/m.test(p));
+});
+
 test('parseResponse handles KEEP, quotes, whitespace, overlength', () => {
   assert.equal(titler.parseResponse('KEEP'), 'KEEP');
   assert.equal(titler.parseResponse('  KEEP \n'), 'KEEP');

@@ -219,7 +219,9 @@ async function backfill(argv, testOpts = {}) {
       continue;
     }
     consecutiveFailures = 0;
-    if (res.action === 'titled' || res.action === 'dry-run') {
+    // A restyle is a title the sweep wrote, so it counts and prints like any other - a user who
+    // turns prefixes on and sweeps their history has to see which titles changed.
+    if (res.action === 'titled' || res.action === 'restyled' || res.action === 'dry-run') {
       titled++;
       process.stdout.write(line(sess.mtime, sess.sessionId, res.title));
       if (!testOpts.runner) await sleep(500); // don't machine-gun the API across a long sweep

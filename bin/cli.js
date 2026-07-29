@@ -8,7 +8,9 @@ Usage: claude-session-namer <command>
 
   install     Register the Stop hook in Claude Code settings
   uninstall   Remove the Stop hook
-  backfill    Title all existing vague/untitled sessions (--dry-run, --model <m>, --project <path>)
+  backfill    Title existing vague/untitled sessions - by default the 50 newest from
+              the last 30 days (--since <days>, --limit <n>, --all for full history,
+              --dry-run, --model <m>, --project <path>)
               (--dry-run still calls the model per session)
   rename      Set a session title by hand: rename <session-id> "title"
   protect     Keep a session's current title as it is: protect <session-id>

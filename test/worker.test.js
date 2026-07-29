@@ -111,13 +111,14 @@ test('an explicitly protected session still reports manual-skip, app marker or n
 // human rename manual-locked nearly every session on first sight and killed drift re-titling.
 test('a foreign custom-title is drift-tracked, not manual-locked', () => {
   const { worker, state, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Spending analysis review')]);
-  // present and not vague: no first-title need, drift baseline set without an LLM call
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Spending] Analysis review')]);
+  // present, not vague, and already in the configured format: no first-title need, drift baseline
+  // set without an LLM call
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
   assert.equal(state.load().sessions.s1.manual, false);
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
   // at 2x growth it gets re-checked like any other title, and a drifted session is re-titled
-  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.titleEntry('Spending analysis review')]);
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.titleEntry('[Spending] Analysis review')]);
   const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[Emails] SES bounce triage' });
   assert.equal(res.action, 'titled');
   const t = require('../src/transcript');
@@ -138,17 +139,17 @@ test('our own title, read back as a custom-title, still drift-rechecks', () => {
 
 test('non-vague ai-title is not manual-protected and drift-rechecks', () => {
   const { worker, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('Spending analysis review')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('[Spending] Analysis review')]);
   // ai-title present and not vague: no first-title need, baseline established -> no-check-needed (not manual-skip)
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
   const state = require('../src/state');
   assert.equal(state.load().sessions.s1.manual, false);
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2); // drift baseline set without an LLM call
   // at 2x growth the ai-title gets drift-rechecked like any derived title
-  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('Spending analysis review')]);
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('[Spending] Analysis review')]);
   const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => 'KEEP' });
   assert.equal(res.action, 'kept');
-  assert.equal(res.title, 'Spending analysis review'); // the kept result carries the title that was kept
+  assert.equal(res.title, '[Spending] Analysis review'); // the kept result carries the title that was kept
 });
 
 test('vague custom-title (New session) is fair game', () => {
@@ -262,10 +263,10 @@ test('a dry run never writes state', () => {
   const stateFile = require('../src/paths').stateFile();
   const runner = () => '[X] Nope';
   // already-titled by a custom-title record - would otherwise persist the drift baseline
-  const f1 = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('My hand-written name')]);
+  const f1 = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Notes] My hand-written name')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: f1, dryRun: true, runner }).action, 'no-check-needed');
   // already-titled session inside the gate - would otherwise persist the drift baseline
-  const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.aiTitleEntry('Spending analysis review', 's2')]);
+  const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.aiTitleEntry('[Spending] Analysis review', 's2')]);
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: f2, dryRun: true, runner }).action, 'no-check-needed');
   // untitled session drawing a KEEP - would otherwise persist lastTryTurns
   const f3 = fx.writeTranscript(projectDir, 's3', chat(2));
@@ -365,11 +366,11 @@ test('a title appearing mid-generate is left alone without locking the session',
   const t = require('../src/transcript');
   const file = fx.writeTranscript(projectDir, 's1', chat(2));
   const runner = () => {
-    t.appendTitleRecord(file, 's1', 'Renamed in the app');
+    t.appendTitleRecord(file, 's1', '[Notes] Renamed in the app');
     return '[Emails] SES triage';
   };
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'title-changed');
-  assert.equal(t.currentTitle(t.readEntries(file)), 'Renamed in the app');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Notes] Renamed in the app');
   assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
   // nothing is recorded at all - no lock, and no claim on a title we never wrote
   assert.equal(state.load().sessions.s1, undefined);
@@ -395,13 +396,13 @@ test('the mid-generate re-check ignores the vague title the session started with
 test('an ai-title re-asserted as an identical custom-title mid-generate is not a new arrival', () => {
   const { worker, projectDir } = setup();
   const t = require('../src/transcript');
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('Spending analysis review')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.aiTitleEntry('[Spending] Analysis review')]);
   // baseline set from the ai-title, no LLM call
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('no call yet'); } }).action, 'no-check-needed');
-  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('Spending analysis review')]);
+  const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.aiTitleEntry('[Spending] Analysis review')]);
   const runner = () => {
     // the app re-asserts the same title it already showed, this time as a custom-title record
-    t.appendTitleRecord(file2, 's1', 'Spending analysis review');
+    t.appendTitleRecord(file2, 's1', '[Spending] Analysis review');
     return '[Emails] SES bounce triage';
   };
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner }).action, 'titled');
@@ -418,6 +419,226 @@ test('a KEEP on a vague-but-present title reports no title', () => {
   // the session's name is back to the app's vague default, but the drift baseline stands
   file = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry('New session')]);
   assert.deepEqual(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'KEEP' }), { action: 'kept', title: null });
+});
+
+// The prefix setting is a format contract: if the user asked for prefixes, every title the tool
+// manages carries one. An accurate title in the wrong format is reformatted with its meaning intact
+// rather than re-derived from scratch.
+test('prefix on: an accurate title with no prefix is restyled rather than left alone', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, '[Emails] SES bounce triage');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  // the reformat prompt, not the drift prompt
+  assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
+  assert.ok(!prompt.includes('If the current title still accurately describes'));
+  // written the same crash-safe way a first title is: claimed in state, baseline set, prefix counted
+  const after = state.load();
+  assert.deepEqual(after.sessions.s1.written, ['[Emails] SES bounce triage']);
+  assert.equal(after.sessions.s1.lastCheckTurns, 2);
+  assert.equal(after.sessions.s1.manual, false);
+  assert.deepEqual(after.prefixes, { Emails: 1 });
+});
+
+test('a title already in the configured format costs no model call', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } });
+  assert.equal(res.action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+});
+
+// The contract runs both ways - with prefixes off, a prefixed title is the non-conforming one.
+test('prefix off: a prefixed title is restyled down to a bare phrase', () => {
+  const { worker, state, projectDir } = setup();
+  state.saveConfig({ prefix: false });
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return 'SES bounce triage'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, 'SES bounce triage');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+  assert.ok(prompt.includes('- Drop the prefix and keep the phrase as it is'));
+  // stripping a prefix is mechanical, so the prompt spends nothing on the conversation
+  assert.ok(!prompt.includes('Conversation excerpt'));
+  assert.ok(!prompt.includes('question 0 about SES bounces'));
+  // and a bare title under the same setting is the conforming one
+  const file2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
+  assert.equal(
+    worker.processSession({ sessionId: 's2', transcriptPath: file2, runner: () => { throw new Error('should not call'); } }).action,
+    'no-check-needed',
+  );
+});
+
+// Both hard protections - the manual flag and the app's 'user' marker - sit upstream of the format
+// check, so a wrong-format title on a session the user owns stays exactly as they left it. The
+// KEEP-biased personal-label rule is not one of them: it lives in the drift prompt, which restyle
+// mode strips, so an unmarked personal label gets reformatted rather than spared.
+test('a wrong-format title on a protected or app-renamed session is left as it is', () => {
+  const { worker, state, projectDir } = setup({ s2: 'user' });
+  const t = require('../src/transcript');
+  const mustNotCall = () => { throw new Error('must not call the model'); };
+
+  const f1 = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Revisit Monday')]);
+  const s = state.load();
+  state.session(s, 's1').manual = true;
+  state.save(s);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: f1, runner: mustNotCall }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(f1)), 'Revisit Monday');
+
+  const f2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('Revisit Monday', 's2')]);
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: f2, runner: mustNotCall }).action, 'app-renamed-skip');
+  assert.equal(t.currentTitle(t.readEntries(f2)), 'Revisit Monday');
+});
+
+// The other half of that: a personal label carrying neither marker is not spared. The KEEP rule that
+// would have spared it is a drift-prompt rule, and restyle mode strips every KEEP rule - so the
+// label is reshaped into the format with its meaning intact. `protect` is what holds one as typed.
+test('an unmarked personal label in the wrong format is reformatted, not spared', () => {
+  const { worker, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Revisit Monday')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] Revisit Monday'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, '[Emails] Revisit Monday');
+  assert.ok(!prompt.includes('deliberate personal label'));
+});
+
+// KEEP is forbidden in restyle mode, but the parser still returns it defensively when a model
+// disobeys. Recording the baseline is what stops that from re-asking on every Stop event.
+test('a restyle the model answers KEEP to keeps the title and waits for growth', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  let calls = 0;
+  const keep = () => { calls++; return 'KEEP'; };
+  assert.deepEqual(
+    worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep }),
+    { action: 'kept', title: 'SES bounce triage' },
+  );
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  // repeated events at the same turn count don't re-ask
+  for (let i = 0; i < 3; i++) worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep });
+  assert.equal(calls, 1);
+  // the growth cadence owns the next look, and a model that obeys converges the title
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(4), fx.titleEntry('SES bounce triage')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: () => '[Emails] SES bounce triage' });
+  assert.equal(res.action, 'restyled');
+  assert.equal(require('../src/transcript').currentTitle(require('../src/transcript').readEntries(grown)), '[Emails] SES bounce triage');
+});
+
+// A drift check can answer KEEP, and a KEEP on a non-conforming title would leave the format wrong
+// for good. So once a title is out of format, the reformat is the check that runs - the next drift
+// check, one growth step later, is where its meaning gets re-derived.
+test('a wrong-format title is restyled even when a drift check is due', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(10));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 10);
+  // the session's name is a bare phrase now - the app's own, or ours from before prefixes were on
+  file = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('SES bounce triage')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
+  assert.ok(!prompt.includes('If the current title still accurately describes'));
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 20);
+});
+
+// A session nobody is adding turns to any more never grows, so its baseline gates the reformat out
+// for good and a sweep over history could never converge it - the one thing flipping the setting
+// promises. `backfill` passes force to open that gate, and only that gate.
+test('force opens the reformat gate on a baselined session and nothing else', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const mustNotCall = () => { throw new Error('must not call the model'); };
+
+  // a conforming title with a baseline - force is not a licence to re-run the drift check
+  const conforming = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
+
+  // a non-conforming title sitting at its own baseline: gated out unforced, converges forced
+  const file = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
+  const s = state.load();
+  state.session(s, 's2').lastCheckTurns = 2;
+  state.save(s);
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, runner: mustNotCall }).action, 'no-check-needed');
+  const res = worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: () => '[Emails] SES bounce triage' });
+  assert.equal(res.action, 'restyled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  // and the gate closes on the title it just wrote - a second forced look costs nothing
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: mustNotCall }).action, 'no-check-needed');
+});
+
+// A session with nothing usable to reformat needs a title, not a restyle - the first-title path
+// still owns it.
+test('a vague title takes the first-title path, whatever format it is in', () => {
+  const { worker, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(1), fx.titleEntry('New session')]);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] SES triage'; },
+  });
+  assert.equal(res.action, 'titled');
+  assert.ok(prompt.includes('There is no current title yet'));
+  assert.ok(!prompt.includes('rewrite it into the required format'));
+});
+
+test('a dry-run restyle reports the title it would write and writes nothing', () => {
+  const { worker, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    dryRun: true,
+    runner: () => '[Emails] SES bounce triage',
+  });
+  assert.equal(res.action, 'dry-run');
+  assert.equal(res.title, '[Emails] SES bounce triage');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+  assert.equal(require('node:fs').existsSync(require('../src/paths').stateFile()), false);
+});
+
+// The restyle path shares the normal write path, so the mid-generate protections cover it too.
+test('a rename that lands mid-restyle is not clobbered by the reformatted title', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const runner = () => {
+    t.appendTitleRecord(file, 's1', 'My hand-written name');
+    const other = state.load();
+    state.recordTitle(other, 's1', 'My hand-written name', 2);
+    state.session(other, 's1').manual = true;
+    state.save(other);
+    return '[Emails] SES bounce triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
 });
 
 test('parseArgs reads flags in any order and tolerates missing values', () => {

@@ -18,12 +18,27 @@ Titles you set through `rename` or `protect` are never overwritten. Those mark t
 
 ## Install
 
-```
-npm install -g claude-session-namer
-claude-session-namer install
-```
+1. Install the package:
 
-`install` writes a hook wrapper to `~/.claude/claude-session-namer/hook.sh` and registers one Stop hook entry in `~/.claude/settings.json`. Existing hooks are left alone.
+   ```
+   npm install -g claude-session-namer
+   ```
+
+2. Register the hook:
+
+   ```
+   claude-session-namer install
+   ```
+
+   From then on, new sessions title themselves. `install` writes a hook wrapper to `~/.claude/claude-session-namer/hook.sh` and registers one Stop hook entry in `~/.claude/settings.json`. Existing hooks are left alone.
+
+3. Optional - preview titling the sessions you already have:
+
+   ```
+   claude-session-namer backfill --dry-run
+   ```
+
+   The default covers your recent sessions: the 50 newest from the last 30 days. Each previewed session costs one haiku call, so a preview is not free. `--all` covers your full history instead.
 
 To remove it:
 
@@ -39,7 +54,8 @@ Uninstall removes the hook entry and the wrapper. Titles already written stay.
 install [--no-prefix]                Register the Stop hook
 uninstall                            Remove the Stop hook
 backfill [--dry-run] [--model <m>]   Title existing untitled or vague sessions
-         [--project <path>]
+         [--project <path>] [--all]  (recent ones by default)
+         [--since <days>] [--limit <n>]
 rename <session-id> "title"          Set a title by hand and lock the session
 protect <session-id>                 Lock the title a session already has
 unprotect <session-id>               Let the tool re-title it again
@@ -55,7 +71,17 @@ Preview a backfill before running it:
 claude-session-namer backfill --dry-run
 ```
 
-`--dry-run` writes nothing, but it still calls the model once per eligible session, so it costs the same as the real run. `--model` defaults to `haiku`. `--project` takes either a path or the encoded directory name that `list` prints. Sessions touched in the last 10 minutes are skipped as probably still open.
+`--dry-run` writes nothing, but it still calls the model once per eligible session, so it costs the same as the real run.
+
+A backfill covers your recent sessions by default - the 50 newest from the last 30 days - and prints the scope it scanned. Two-year-old sessions don't need titles, and sweeping the whole store is hundreds of model calls.
+
+```
+--since <days>   Widen the window. Still capped at 50 unless --limit is given
+--limit <n>      Change the cap on how many sessions are scanned
+--all            Full history: no window, no cap. Can't be combined with --since or --limit
+```
+
+`--model` defaults to `haiku`. `--project` takes either a path or the encoded directory name that `list` prints. Sessions touched in the last 10 minutes are skipped as probably still open.
 
 `rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did. `list` marks a locked session with a trailing `[protected]` and a session you renamed in the desktop app with `[renamed in app]`; a session can carry both, and neither is visible anywhere else.
 
@@ -78,6 +104,8 @@ claude-session-namer config prefix off
 
 Or install with `--no-prefix`. `config` with no arguments prints the current setting.
 
+The setting is a format contract, not a preference applied to new titles only: with prefixes on, every title the tool manages carries one, and with prefixes off, none does. A title that describes the session accurately but is in the wrong format gets reformatted rather than regenerated - the phrase keeps its meaning and only the shape changes, so `SES bounce triage` becomes `[Emails] SES bounce triage` and back again if you flip the setting. Flipping it converges the titles you already have: a session you're still working in is reformatted the next time it's checked, and `backfill` does the rest in one pass - a session you've finished with never gains turns again, so a sweep is what converges those. Sessions you renamed by hand, protected, or renamed in the desktop app are exempt, as always.
+
 ## Desktop app sidebar
 
 The desktop app's sidebar doesn't read the transcript. It reads the app's own registry - one JSON file per session under `~/Library/Application Support/Claude` - so titles written here show up in the CLI (`list`, the resume picker, `--resume`) but don't reach the app sidebar on their own.
@@ -97,7 +125,9 @@ Sessions you renamed in the app yourself are left out. `--all` puts them back in
 
 ## Cost
 
-A few haiku calls per session, run through your existing Claude subscription via the `claude` CLI. No API key, no separate billing. A backfill over ~400 sessions is roughly 350 model calls and about 30 minutes - it runs sequentially with a throttle between calls.
+A few haiku calls per session, run through your existing Claude subscription via the `claude` CLI. No API key, no separate billing.
+
+A default backfill is a few dozen model calls and a few minutes. A `--all` backfill over a ~400-session store is roughly 350 model calls and 45 minutes or more - it runs sequentially with a throttle between calls.
 
 ## Caveats
 

@@ -6,8 +6,10 @@ const appstore = require('./appstore');
 
 // Decides whether this session needs a title, asks for one, and writes it.
 // Returns { action, title? } - action is one of:
-//   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | dry-run | title-changed
-function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, runner }) {
+//   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | restyled |
+//   dry-run | title-changed
+// `force` opens the format-reformat gate and nothing else - see the restyle block below.
+function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, force = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
   if (turns < 1) return { action: 'no-turns' };
@@ -50,7 +52,27 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   const grew = turns > (sess.lastTryTurns || 0);
   const needsFirst = vague && sess.lastCheckTurns === 0 && grew;
   const needsRecheck = sess.lastCheckTurns > 0 && turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4 && grew;
-  if (!needsFirst && !needsRecheck) {
+
+  // The prefix setting is a format contract, not a preference the model weighs per session: ask for
+  // prefixes and every title the tool manages carries one, ask for bare phrases and none does. A
+  // title that describes the work accurately but in the wrong shape is reformatted with its meaning
+  // intact rather than re-derived - so a session titled before the setting changed, or one the app
+  // named in its own format, converges the next time we look at it.
+  // The look is on the doubling gate, and it takes precedence over a drift check: a non-conforming
+  // title can't be the answer to "has this drifted", because a KEEP there would leave the format
+  // wrong for good. A vague title has nothing worth preserving, so the first-title path keeps it.
+  // `force` bypasses the gate, and a sweep passes it. Without that bypass the feature only ever
+  // reaches live sessions: a session that has been looked at before carries a baseline, and one
+  // nobody is adding turns to any more never grows past it, so the gate on a finished session never
+  // opens again and no sweep could converge it. The bypass is scoped to this gate alone - forcing the
+  // drift recheck would re-derive meaning on every session in a sweep, at a model call each.
+  const config = stateMod.loadConfig();
+  const needsRestyle = !vague
+    && Boolean(title)
+    && !titler.matchesFormat(title, config.prefix)
+    && (force || sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2);
+
+  if (!needsFirst && !needsRecheck && !needsRestyle) {
     // Sessions that arrived already titled (by the app's own title record, usually) have no
     // baseline yet - set one here so drift tracking measures growth from now, not from turn
     // zero. A still-vague session gets no baseline: lastTryTurns is its tracker, and a baseline
@@ -63,7 +85,8 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
     currentTitle: vague ? null : title,
     prefixes: stateMod.topPrefixes(s),
     excerpt: t.buildExcerpt(entries),
-    usePrefix: stateMod.loadConfig().prefix,
+    usePrefix: config.prefix,
+    restyle: needsRestyle,
     model,
     runner,
   });
@@ -91,6 +114,9 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
     // endorsement - don't move the baseline, or the next Stop event would be gated out and
     // the session would stay untitled. Record the attempt instead, so we wait for new turns
     // rather than re-asking the same question of the same transcript.
+    // A restyle is never supposed to draw a KEEP - the prompt forbids it - but the parser returns one
+    // defensively whatever mode asked, so a model that disobeys lands here. The baseline moves, which
+    // hands the next look back to the growth cadence rather than re-asking on every Stop event.
     if (vague) freshSess.lastTryTurns = turns; else freshSess.lastCheckTurns = turns;
     stateMod.save(fresh);
     return { action: 'kept', title: vague ? null : title };
@@ -135,7 +161,7 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   t.appendTitleRecord(transcriptPath, sessionId, generated);
   stateMod.recordTitle(fresh, sessionId, generated, turns);
   stateMod.save(fresh);
-  return { action: 'titled', title: generated };
+  return { action: needsRestyle ? 'restyled' : 'titled', title: generated };
 }
 
 // Flags may appear in any order; a missing flag, or a trailing flag with no value, reads as

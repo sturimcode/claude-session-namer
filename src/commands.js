@@ -4,6 +4,7 @@ const path = require('node:path');
 const paths = require('./paths');
 const t = require('./transcript');
 const stateMod = require('./state');
+const appstore = require('./appstore');
 const { PROMPT_SIGNATURE } = require('./titler');
 const { processSession } = require('./worker');
 
@@ -68,11 +69,12 @@ const sanitizeTitle = (s) => String(s == null ? '' : s)
 
 // The date is the user's, not UTC - a session from last night shouldn't read as tomorrow.
 // en-CA gives the ISO-shaped YYYY-MM-DD everyone can sort by eye.
-// Protection is a state fact, not part of the title, so it arrives as its own argument and is
-// appended after the title has been sanitized - a marker built into the title string would be
-// flattened along with it.
-const line = (mtime, sessionId, title, isProtected = false) =>
-  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${sanitizeTitle(title) || '(untitled)'}${isProtected ? ' [protected]' : ''}\n`;
+// Both marks are facts about the session, not part of the title, so they arrive as their own
+// arguments and are appended after the title has been sanitized - a marker built into the title
+// string would be flattened along with it. A session can carry both: `[protected]` is a lock set
+// here, `[renamed in app]` is a name the user typed in the desktop app.
+const line = (mtime, sessionId, title, isProtected = false, isAppRenamed = false) =>
+  `${new Date(mtime).toLocaleDateString('en-CA')}  ${sessionId.slice(0, 8).padEnd(8)}  ${sanitizeTitle(title) || '(untitled)'}${isProtected ? ' [protected]' : ''}${isAppRenamed ? ' [renamed in app]' : ''}\n`;
 
 // Sessions touched in the last 10 minutes are probably still open, which means a Stop-hook worker
 // of their own is already handling them - a sweep would only race that worker for the same job.
@@ -192,7 +194,9 @@ function matchSession(id) {
 // Protection is an explicit act and lives only in state - no title record is written, so an app-set
 // or tool-set title is locked exactly as it stands. Nothing about a title record itself can confer
 // protection: the desktop app writes its own auto-titles as the same `custom-title` records a human
-// rename produces, so the two are indistinguishable on disk.
+// rename produces, so the transcript cannot tell the two apart. The app's own session store can, and
+// the worker reads it - but only on macOS, and only for sessions the app knows about, so `protect`
+// stays the guarantee.
 function setManual(argv, value, verb) {
   const [id, ...rest] = argv;
   if (!id || rest.length) return usage(`Usage: claude-session-namer ${verb} <session-id>\n`);
@@ -230,12 +234,15 @@ async function rename(argv) {
 
 async function list(argv) {
   if (badProject(argv)) return;
-  // Protection lives only in state - nothing in the transcript shows it - so the listing is the
-  // only place a user can see which sessions the tool has stopped re-titling. Read state once.
+  // Neither mark shows in the transcript - one lives in our state, the other in the desktop app's -
+  // so the listing is the only place a user can see which sessions the tool has stopped re-titling.
+  // Both are read once for the whole listing: a per-row lookup in the app store would walk its few
+  // hundred files again for every session printed, which costs seconds.
   const { sessions: known } = stateMod.load();
+  const appRenamed = appstore.userRenamedIds();
   for (const sess of sessions(opt(argv, '--project')).slice(0, 50)) {
     const entry = known[sess.sessionId];
-    process.stdout.write(line(sess.mtime, sess.sessionId, titleOf(sess.file), Boolean(entry && entry.manual)));
+    process.stdout.write(line(sess.mtime, sess.sessionId, titleOf(sess.file), Boolean(entry && entry.manual), appRenamed.has(sess.sessionId)));
   }
 }
 

@@ -9,4 +9,10 @@ const configFile = () => path.join(stateDir(), 'config.json');
 const settingsFile = () => path.join(claudeDir(), 'settings.json');
 const hookScript = () => path.join(stateDir(), 'hook.sh');
 
-module.exports = { claudeDir, projectsDir, stateDir, stateFile, configFile, settingsFile, hookScript };
+// The desktop app's own session store, one JSON file per session, nested two directory levels deep.
+// It is the app's private data, not ours - we only read it, and only for the titleSource marker.
+// The env var exists so the tests can point at a fixture; nothing else sets it.
+const appStoreDir = () => process.env.CLAUDE_SESSION_NAMER_APP_STORE
+  || path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions');
+
+module.exports = { claudeDir, projectsDir, stateDir, stateFile, configFile, settingsFile, hookScript, appStoreDir };

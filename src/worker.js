@@ -2,10 +2,11 @@ const fs = require('node:fs');
 const t = require('./transcript');
 const stateMod = require('./state');
 const titler = require('./titler');
+const appstore = require('./appstore');
 
 // Decides whether this session needs a title, asks for one, and writes it.
 // Returns { action, title? } - action is one of:
-//   no-turns | manual-skip | no-check-needed | kept | titled | dry-run | title-changed
+//   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | dry-run | title-changed
 function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
@@ -15,6 +16,14 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   const sess = stateMod.session(s, sessionId);
   if (sess.manual) return { action: 'manual-skip' };
 
+  // A name typed in the desktop app UI is the user's, exactly like one set through `rename`. The
+  // transcript can't show that - the app files its own auto-titles as the same record type - but the
+  // app's session store marks it, and that marker is the only reliable signal on disk.
+  // Nothing is written here on purpose: the store is consulted live on every run, so if the marker
+  // ever changes - the user renames the session again, or the app rewrites its own record - behavior
+  // follows it rather than a copy of it we froze into state.
+  if (appstore.titleSourceFor(sessionId) === 'user') return { action: 'app-renamed-skip' };
+
   const info = t.titleInfo(entries);
   const title = info.title;
   const vague = t.isVagueTitle(title, t.firstUserText(entries));
@@ -22,8 +31,9 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   // A title we didn't write gets no special standing, whatever record type carries it. The desktop
   // app files its own auto-titles as custom-title records - the same type a rename produces - and
   // re-asserts them every few turns, so record source cannot tell a human's name from the app's.
-  // Every non-vague title is simply the current title, subject to the drift flow below; permanent
-  // protection comes only from `rename` or `protect` setting the manual flag above.
+  // Every non-vague title is simply the current title, subject to the drift flow below; protection
+  // comes from the two checks above - the manual flag `rename` and `protect` set, and the app's own
+  // 'user' marker - never from the title record itself.
 
   // A transcript that shrank is not the one we measured against (rewrite, compaction,
   // truncation) - drop the stale baseline so an untitled session is treated as fresh.

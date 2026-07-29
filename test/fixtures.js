@@ -33,4 +33,22 @@ function fakeConfig() {
   return { configDir, projectDir };
 }
 
-module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig };
+// Builds a temp stand-in for the desktop app's session store, which nests one JSON file per session
+// two directory levels deep. Takes { [cliSessionId]: 'user' | 'auto' | null }, where null writes a
+// file with no titleSource field at all - the shape older app builds left behind. Returns the root,
+// which the caller points CLAUDE_SESSION_NAMER_APP_STORE at.
+function fakeAppStore(entries = {}) {
+  const root = tmpDir();
+  let i = 0;
+  for (const [cliSessionId, titleSource] of Object.entries(entries)) {
+    const dir = path.join(root, `outer-${i}`, `inner-${i}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const record = { sessionId: `app-${i}`, cliSessionId, title: `App title ${i}` };
+    if (titleSource) record.titleSource = titleSource;
+    fs.writeFileSync(path.join(dir, `local_${i}.json`), JSON.stringify(record));
+    i++;
+  }
+  return root;
+}
+
+module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig, fakeAppStore };

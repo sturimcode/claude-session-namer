@@ -9,11 +9,19 @@ const fx = require('./fixtures');
 // `claude -p` from the OS temp dir. realpath matters on macOS, where /var is a symlink.
 const tmpProjectName = () => fs.realpathSync(os.tmpdir()).replace(/[^a-zA-Z0-9]/g, '-');
 
-function fresh() {
+// appStore maps cliSessionId -> 'user' | 'auto' | null. Each run gets its own store, empty by
+// default, so no test reads the real desktop app store on the machine running the suite.
+function fresh(appStore = {}) {
   const { configDir, projectDir } = fx.fakeConfig();
   process.env.CLAUDE_CONFIG_DIR = configDir;
-  for (const m of ['../src/paths', '../src/state', '../src/worker', '../src/commands']) delete require.cache[require.resolve(m)];
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = fx.fakeAppStore(appStore);
+  for (const m of ['../src/paths', '../src/state', '../src/appstore', '../src/worker', '../src/commands']) delete require.cache[require.resolve(m)];
   return { commands: require('../src/commands'), projectDir, configDir };
+}
+
+// A store dir that was never created at all - the Linux, Windows, and CLI-only case.
+function noAppStore() {
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = path.join(fx.tmpDir(), 'no-such-store');
 }
 
 // Swaps both streams so a command's stdout and its usage errors can be asserted separately.
@@ -270,6 +278,44 @@ test('list marks protected sessions and leaves the rest unmarked', async () => {
   assert.ok(after.find((l) => l.includes('aaa11111')).endsWith('[Emails] SES fix'));
 });
 
+// The desktop app records a title typed in its UI as titleSource 'user'. Those sessions are never
+// re-titled, so the listing has to say why - otherwise a user sees a session the tool silently
+// never touches and has no idea it is spoken for.
+test('list marks sessions renamed in the desktop app', async () => {
+  const renamed = 'aaa11111-1111-1111-1111-111111111111';
+  const auto = 'bbb22222-2222-2222-2222-222222222222';
+  const unknown = 'ccc33333-3333-3333-3333-333333333333';
+  const { commands, projectDir } = fresh({ [renamed]: 'user', [auto]: 'auto' });
+  fx.writeTranscript(projectDir, renamed, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', renamed)]);
+  fx.writeTranscript(projectDir, auto, [fx.userEntry('about figma'), fx.titleEntry('[CP] Experts tab', auto)]);
+  fx.writeTranscript(projectDir, unknown, [fx.userEntry('about nexus'), fx.titleEntry('[Nexus] Disclaimers', unknown)]);
+  const lines = (await capture(() => commands.list([]))).trim().split('\n');
+  assert.ok(lines.find((l) => l.includes('aaa11111')).endsWith('Revisit Monday [renamed in app]'), lines.join('\n'));
+  assert.ok(lines.find((l) => l.includes('bbb22222')).endsWith('[CP] Experts tab'), lines.join('\n'));
+  assert.ok(lines.find((l) => l.includes('ccc33333')).endsWith('[Nexus] Disclaimers'), lines.join('\n'));
+});
+
+// Both marks can be true of one session, and each says something the other doesn't: one is a lock
+// the user set here, the other is a name they typed in the app.
+test('a session both protected and renamed in the app carries both marks', async () => {
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [id]: 'user' });
+  fx.writeTranscript(projectDir, id, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', id)]);
+  await capture(() => commands.protect([id]));
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.trim().endsWith('Revisit Monday [protected] [renamed in app]'), out);
+});
+
+// No app store means no signal, on Linux, on Windows, or on a machine that has only run the CLI.
+// The listing still works and nothing is marked.
+test('list works with no desktop app store present', async () => {
+  const { commands, projectDir } = fresh();
+  noAppStore();
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x'), fx.titleEntry('[Emails] SES fix', 'aaa11111-1111-1111-1111-111111111111')]);
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.trim().endsWith('[Emails] SES fix'), out);
+});
+
 test('list is newest first and caps at 50', async () => {
   const { commands, projectDir } = fresh();
   for (let i = 0; i < 55; i++) {
@@ -458,6 +504,19 @@ test('backfill dry-run titles vague sessions without writing', async () => {
   assert.ok(out.includes('[Emails] SES bounce help'));
   // A dry run still spends a model call per session - the summary has to say so.
   assert.ok(out.includes('[dry-run] 1 session(s) would be titled (each cost one model call), 0 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
+// Backfill counts anything that isn't a title it wrote as skipped, so the app-rename protection
+// carries over to the sweep without backfill knowing the action exists.
+test('backfill leaves a session renamed in the desktop app alone', async () => {
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [id]: 'user' });
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  const out = await capture(() => commands.backfill([], { runner: () => { throw new Error('must not call the model'); } }));
+  assert.ok(out.includes('0 session(s) titled, 1 skipped.'), out);
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(file)), null);
 });

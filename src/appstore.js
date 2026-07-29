@@ -70,7 +70,7 @@ function titleSourceFor(cliSessionId) {
 function userRenamedIds() {
   const ids = new Set();
   for (const record of records()) {
-    if (record.cliSessionId && record.titleSource === 'user') ids.add(record.cliSessionId);
+    if (typeof record.cliSessionId === 'string' && record.titleSource === 'user') ids.add(record.cliSessionId);
   }
   return ids;
 }

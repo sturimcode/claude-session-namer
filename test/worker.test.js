@@ -336,6 +336,26 @@ test('a rename that lands mid-generate is not clobbered by the title we asked fo
   assert.equal(state.load().sessions.s1.manual, true);
 });
 
+// A rename typed in the desktop app writes no state at all - the only mark it leaves is the
+// titleSource in the app's own store. So the fresh-state re-check above cannot see it, and without
+// a second look at the marker our title lands on top of the name the user just typed, then the skip
+// on the next run freezes it there for good.
+test('an app rename that lands mid-generate is not clobbered by the title we asked for', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    // the user types a name in the app UI while `claude -p` is still blocked
+    fx.appStoreRecord(process.env.CLAUDE_SESSION_NAMER_APP_STORE, 's1', { titleSource: 'user', title: 'Revisit Monday' });
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'app-renamed-skip');
+  // nothing appended over their name, and nothing recorded - the marker is read live every run
+  assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 0);
+  assert.equal(require('node:fs').existsSync(require('../src/paths').stateFile()), false);
+  assert.equal(state.load().sessions.s1, undefined);
+});
+
 // A title that appeared while we were generating wins - ours would be appended after it and take
 // over a name the user may have just typed. It does not make the session manual: the appearing
 // title is just as likely the app re-asserting its own auto-title, so the next Stop event

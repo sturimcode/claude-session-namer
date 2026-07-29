@@ -102,6 +102,11 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   // stick for good. Both signals get re-read here, because a rename shows up in one or the other:
   // our own CLI writes state and transcript, the app writes only the transcript.
   if (freshSess.manual) return { action: 'manual-skip' };
+  // A rename typed in the app UI leaves nothing in our state and nothing in the transcript that
+  // says who wrote it, so neither the fresh-state check above nor the title comparison below can
+  // catch it - only the store marker can. Re-read it: our title would otherwise be appended over
+  // the name the user just typed, and the skip at the top would then freeze it there for good.
+  if (appstore.titleSourceFor(sessionId) === 'user') return { action: 'app-renamed-skip' };
   const freshEntries = t.readEntries(transcriptPath);
   const freshInfo = t.titleInfo(freshEntries);
   // The string is what identifies a title, not the record carrying it: the app re-asserts a title

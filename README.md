@@ -10,7 +10,7 @@ Tools that title a session do it once, from the opening exchange. This one title
 
 ## How it works
 
-A Stop hook fires after each of your turns. It spawns a detached background worker, so nothing blocks your session. The worker reads the transcript, calls `claude -p --model haiku` for a title, and appends a native `custom-title` record to the session's JSONL file - the same record type Claude Code writes when you rename a session yourself. Titles show up in the CLI and the desktop app, which share one session store.
+A Stop hook fires after each of your turns. It spawns a detached background worker, so nothing blocks your session. The worker reads the transcript, calls `claude -p --model haiku` for a title, and appends a native `custom-title` record to the session's JSONL file - the same record type Claude Code writes when you rename a session yourself. Titles show up in the CLI and the desktop app, which share one session store. Re-titling works even on a session you are still using: the app adopts the newest title record and re-asserts it as its own.
 
 Re-titling is growth-gated. The first title lands after your first exchange. After that, a session is re-checked when its user-turn count roughly doubles: a 100-turn session gets about 5 checks, not 100. If the current title still fits, the model answers `KEEP` and nothing is written.
 
@@ -92,8 +92,6 @@ Read these before installing.
 **macOS and Linux.** Windows is untested - the hook installs as a `/bin/sh` wrapper.
 
 **A title you type in the app can be overwritten.** Claude Code writes its own auto-generated titles into the transcript as the same record type your renames produce, and re-writes them as a session grows, so nothing in the file distinguishes the two. Re-titling those auto-titles is the point of this tool, so it cannot skip them - which means a name you typed in the app UI is protected only by heuristics: the model is told to answer `KEEP` when the current title reads like a deliberate label (a person's name, a date, "Revisit Monday") and when it already describes the conversation. That is not a guarantee. `rename` and `protect` are - both mark the session yours in the tool's own state, and the tool stops touching it until you run `unprotect`.
-
-**Re-titling a session you are still using works.** A live session adopts the newest title record, so a re-title applies immediately, and the app's periodic re-writes then re-assert our title rather than its own.
 
 **Don't export `CLAUDE_SESSION_NAMER_WORKER` in the shell that launches Claude Code.** That variable is the recursion guard - the worker sets it on its own `claude -p` call so the resulting Stop hook doesn't spawn another worker. If it is already set in your environment, titling silently does nothing.
 

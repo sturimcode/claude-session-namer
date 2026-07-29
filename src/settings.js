@@ -1,5 +1,7 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const paths = require('./paths');
 
 const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
@@ -144,7 +146,58 @@ function wrapperScript(cli) {
 
 const INSTALL_USAGE = 'Usage: claude-session-namer install [--no-prefix]\n';
 
-function install(argv = []) {
+// Long enough that a cold CLI start and one haiku round-trip fit, short enough that a wedged or
+// network-stalled CLI can't leave the user staring at a hung install.
+const PROBE_TIMEOUT_MS = 30_000;
+
+// Titles only ever come from `claude -p`, and the hook is silent on every failure path by design, so
+// a CLI that isn't authenticated (or isn't installed) makes titling a no-op nobody hears about.
+// install is the one moment we can say so, and it says it without failing: the hook is registered
+// either way, so a probe that fails for a reason of its own never costs the user the install.
+function probe(spawn = spawnSync) {
+  let res;
+  try {
+    res = spawn('claude', ['-p', 'ping', '--model', 'haiku'], {
+      encoding: 'utf8',
+      // Same reason the titler uses it: a headless run files a transcript under the cwd's project
+      // dir, and the sweep already excludes the tmpdir one, so the probe leaves no session behind
+      // that a later backfill would try to title.
+      cwd: os.tmpdir(),
+      timeout: PROBE_TIMEOUT_MS,
+      // Headless `claude -p` runs fire Stop hooks too, so without the guard the hook this very
+      // install just registered would spawn a worker for the probe's own session.
+      env: { ...process.env, CLAUDE_SESSION_NAMER_WORKER: '1' },
+    }) || {};
+  } catch (err) {
+    res = { error: err }; // spawnSync throws rather than returns on some platform-level failures
+  }
+  if (!res.error && res.status === 0) return null;
+
+  const code = res.error && res.error.code;
+  const detail = String(res.stderr || '').split('\n').map((l) => l.trim()).find(Boolean);
+  if (code === 'ENOENT') {
+    return probeWarning('the claude CLI was not found on PATH', '', 'install the claude CLI, then run \'claude /login\' if you are not signed in yet.');
+  }
+  if (code === 'ETIMEDOUT' || res.signal) {
+    return probeWarning(`the claude CLI did not answer within ${PROBE_TIMEOUT_MS / 1000} seconds`, detail, 'run the check below by hand; if it asks you to sign in, run \'claude /login\'.');
+  }
+  const why = res.error ? res.error.message : `claude exited ${res.status}`;
+  return probeWarning('the claude CLI could not generate a title just now', detail ? `${why}: ${detail}` : why, 'run \'claude /login\'.');
+}
+
+function probeWarning(reason, detail, fix) {
+  return [
+    `Warning: the Stop hook is registered, but ${reason}.`,
+    ...(detail ? [`  ${detail.slice(0, 200)}`] : []),
+    'Titling will silently do nothing until that works - the hook exits quietly on every failure, so it will not tell you again.',
+    `Fix: ${fix}`,
+    'Then check it with: claude -p ping --model haiku',
+    '',
+  ].join('\n');
+}
+
+// testOpts carries the spawn seam only, the way backfill takes a runner - nothing else may set it.
+function install(argv = [], testOpts = {}) {
   // A typo'd flag must not read as a plain install - the user would think --no-prefix took effect.
   const unknown = argv.filter((a) => a !== '--no-prefix');
   if (unknown.length) {
@@ -165,6 +218,11 @@ function install(argv = []) {
   fs.chmodSync(paths.hookScript(), 0o755); // a reinstall over an existing file ignores the mode above
   writeSettings(settings);
   process.stdout.write(`Installed. Stop hook registered in ${paths.settingsFile()}\nNew sessions will be titled automatically. Run 'claude-session-namer backfill --dry-run' to preview titling your existing sessions (recent ones only - last 30 days, 50 max; add --all for full history).\n`);
+
+  // Last, and after the success message: the install is done and stands on its own, this only makes
+  // an already-broken titling path visible.
+  const warning = probe(testOpts.spawn);
+  if (warning) process.stderr.write(warning);
 }
 
 function uninstall() {

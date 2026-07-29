@@ -31,6 +31,20 @@ function captureErr(fn) {
 const tmpLeftovers = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
 const modeOf = (p) => fs.statSync(p).mode & 0o777;
 
+function fakeSpawn(result) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return result;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+// install probes the claude CLI, so every install here gets a fake spawn - the real one would shell
+// out to claude on the machine running the tests.
+const probeOk = () => fakeSpawn({ status: 0, stdout: 'pong\n', stderr: '' });
+
 test('addHook/removeHook round-trip preserves unrelated settings', () => {
   const { settings } = fresh();
   const original = { model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other-tool' }] }], PreToolUse: [{ matcher: 'Bash', hooks: [] }] } };
@@ -75,7 +89,7 @@ test('install writes wrapper, registers hook, uninstall reverses', () => {
   const { settings, paths } = fresh();
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus' }));
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.ok(fs.existsSync(paths.hookScript()));
   assert.ok((fs.statSync(paths.hookScript()).mode & 0o111) !== 0);
   const conf = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'));
@@ -91,7 +105,7 @@ test('install writes settings.json atomically and leaves no tmp files', () => {
   const { settings, paths } = fresh();
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus', permissions: { allow: ['Bash(ls:*)'] } }));
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
 
   const raw = fs.readFileSync(paths.settingsFile(), 'utf8');
   assert.doesNotThrow(() => JSON.parse(raw), 'settings.json must always be parseable');
@@ -105,15 +119,15 @@ test('install writes settings.json atomically and leaves no tmp files', () => {
 
 test('install is idempotent across repeated runs', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
+  capture(() => settings.install([], { spawn: probeOk() }));
   const conf = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'));
   assert.equal(conf.hooks.Stop.length, 1);
 });
 
 test('install creates settings.json when none exists', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const conf = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'));
   assert.equal(conf.hooks.Stop[0].hooks[0].command, paths.hookScript());
 });
@@ -123,13 +137,13 @@ test('install refuses to overwrite an unparseable settings.json', () => {
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   const corrupt = '{ "model": "opus", oops';
   fs.writeFileSync(paths.settingsFile(), corrupt);
-  assert.throws(() => capture(() => settings.install()), /not valid JSON/);
+  assert.throws(() => capture(() => settings.install([], { spawn: probeOk() })), /not valid JSON/);
   assert.equal(fs.readFileSync(paths.settingsFile(), 'utf8'), corrupt, 'the user\'s file must be left untouched');
 });
 
 test('wrapper script falls back to the installing node and is valid sh', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const wrapper = fs.readFileSync(paths.hookScript(), 'utf8');
   assert.ok(wrapper.startsWith('#!/bin/sh\n'));
   assert.match(wrapper, /command -v node/);
@@ -142,19 +156,19 @@ test('wrapper script falls back to the installing node and is valid sh', () => {
 
 test('install --no-prefix persists the prefix opt-out', () => {
   const { settings, state } = fresh();
-  capture(() => settings.install(['--no-prefix']));
+  capture(() => settings.install(['--no-prefix'], { spawn: probeOk() }));
   assert.equal(state.loadConfig().prefix, false);
 });
 
 test('install without --no-prefix leaves prefixes on', () => {
   const { settings, state } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(state.loadConfig().prefix, true);
 });
 
 test('install and uninstall print confirmations', () => {
   const { settings, paths } = fresh();
-  const installed = capture(() => settings.install());
+  const installed = capture(() => settings.install([], { spawn: probeOk() }));
   assert.ok(installed.includes(paths.settingsFile()));
   assert.match(installed, /backfill/);
   assert.match(capture(() => settings.uninstall()), /Uninstalled/);
@@ -170,7 +184,7 @@ test('install preserves the permissions of an existing settings.json', () => {
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus' }));
   fs.chmodSync(paths.settingsFile(), 0o600);
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(modeOf(paths.settingsFile()), 0o600, 'a private settings.json must not be widened');
   capture(() => settings.uninstall());
   assert.equal(modeOf(paths.settingsFile()), 0o600, 'uninstall must not widen it either');
@@ -181,13 +195,13 @@ test('install preserves a deliberately group-readable settings.json', () => {
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus' }));
   fs.chmodSync(paths.settingsFile(), 0o644);
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(modeOf(paths.settingsFile()), 0o644, 'the existing mode wins, whatever it is');
 });
 
 test('a settings.json we create ourselves is private', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(modeOf(paths.settingsFile()), 0o600);
 });
 
@@ -197,13 +211,13 @@ test('a hook path containing spaces is quoted in settings.json', () => {
   const { settings, paths } = fresh(dir);
   assert.match(paths.hookScript(), /\s/, 'this test is only meaningful with a spaced path');
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const cmd = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop[0].hooks[0].command;
   assert.equal(cmd, `"${paths.hookScript()}"`, 'an unquoted spaced path word-splits under sh');
   // The stored command must be something sh can actually run.
   assert.equal(spawnSync('sh', ['-c', `command -v ${cmd} >/dev/null`]).status, 0);
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop.length, 1, 'quoting must not break idempotency');
   capture(() => settings.uninstall());
   assert.ok(!fs.readFileSync(paths.settingsFile(), 'utf8').includes('claude-session-namer'), 'quoting must not break uninstall');
@@ -217,12 +231,12 @@ test('a hook path containing a shell metacharacter is quoted and escaped', () =>
   const { settings, paths } = fresh(dir);
   assert.ok(!/\s/.test(paths.hookScript()), 'this test is only meaningful without whitespace');
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const cmd = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop[0].hooks[0].command;
   assert.equal(cmd, `"${paths.hookScript().split('$').join('\\$')}"`, 'an unescaped $ expands to nothing under sh');
   assert.equal(spawnSync('sh', ['-c', `command -v ${cmd} >/dev/null`]).status, 0);
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop.length, 1, 'escaping must not break idempotency');
   capture(() => settings.uninstall());
   assert.ok(!fs.readFileSync(paths.settingsFile(), 'utf8').includes('claude-session-namer'), 'escaping must not break uninstall');
@@ -235,7 +249,7 @@ test('install writes through a symlinked settings.json', () => {
   fs.writeFileSync(realFile, JSON.stringify({ model: 'opus' }));
   fs.symlinkSync(realFile, paths.settingsFile());
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink(), 'the symlink must survive the write');
   const conf = JSON.parse(fs.readFileSync(realFile, 'utf8'));
   assert.equal(conf.model, 'opus');
@@ -255,7 +269,7 @@ test('install writes through a settings.json symlink whose target does not exist
   const realFile = path.join(fx.tmpDir(), 'dotfiles', 'settings.json');
   fs.symlinkSync(realFile, paths.settingsFile());
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink(), 'a dangling link must not be replaced by a regular file');
   const conf = JSON.parse(fs.readFileSync(realFile, 'utf8'));
   assert.ok(JSON.stringify(conf.hooks.Stop).includes('claude-session-namer'), 'the link target must get the content');
@@ -267,7 +281,7 @@ test('a relative dangling symlink resolves against the link\'s own directory', (
   fs.mkdirSync(paths.claudeDir(), { recursive: true });
   fs.symlinkSync(path.join('dotfiles', 'settings.json'), paths.settingsFile());
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const target = path.join(paths.claudeDir(), 'dotfiles', 'settings.json');
   assert.ok(fs.existsSync(target), 'a relative target resolves against the link dir, not the cwd');
   assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink());
@@ -281,7 +295,7 @@ test('a foreign Stop entry that names the tool outside its command survives', ()
   const foreign = { name: 'runs alongside claude-session-namer', hooks: [{ type: 'command', command: 'other-tool' }] };
   fs.writeFileSync(paths.settingsFile(), JSON.stringify({ hooks: { Stop: [structuredClone(foreign)] } }));
 
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const after = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'));
   assert.equal(after.hooks.Stop.length, 2);
   assert.deepEqual(after.hooks.Stop[0], foreign, 'only the command decides whose entry it is');
@@ -331,7 +345,7 @@ test('install aborts on a malformed hooks block and changes nothing', () => {
   const raw = JSON.stringify({ model: 'opus', hooks: [] });
   fs.writeFileSync(paths.settingsFile(), raw);
   assert.throws(
-    () => capture(() => settings.install()),
+    () => capture(() => settings.install([], { spawn: probeOk() })),
     (e) => e.expected === true && /refusing to edit/i.test(e.message),
     'a hooks block we cannot read must abort the install loudly',
   );
@@ -341,15 +355,15 @@ test('install aborts on a malformed hooks block and changes nothing', () => {
 
 test('reinstall restores the wrapper exec bit', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   fs.chmodSync(paths.hookScript(), 0o644);
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   assert.equal(modeOf(paths.hookScript()), 0o755, 'a non-executable wrapper 126s at every Stop');
 });
 
 test('wrapper exits quietly when no node exists at hook time', () => {
   const { settings, paths } = fresh();
-  capture(() => settings.install());
+  capture(() => settings.install([], { spawn: probeOk() }));
   const wrapper = fs.readFileSync(paths.hookScript(), 'utf8');
   // Simulate a machine with no node at all: the pinned fallback is gone and PATH has none.
   const noNode = path.join(fx.tmpDir(), 'deleted-node');
@@ -388,7 +402,7 @@ test('wrapper survives shell metacharacters in the paths it embeds', () => {
 test('install rejects unknown flags and changes nothing', () => {
   const { settings, paths } = fresh();
   const prevExit = process.exitCode;
-  const err = captureErr(() => capture(() => settings.install(['--no-prefx', 'backfill'])));
+  const err = captureErr(() => capture(() => settings.install(['--no-prefx', 'backfill'], { spawn: probeOk() })));
   assert.match(err, /--no-prefx/);
   assert.match(err, /Usage/);
   assert.equal(process.exitCode, 1);
@@ -407,7 +421,7 @@ test('install --no-prefix leaves unrelated config keys alone', () => {
   const { settings, paths, state } = fresh();
   fs.mkdirSync(paths.stateDir(), { recursive: true });
   fs.writeFileSync(paths.configFile(), JSON.stringify({ model: 'haiku' }));
-  capture(() => settings.install(['--no-prefix']));
+  capture(() => settings.install(['--no-prefix'], { spawn: probeOk() }));
   assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false });
 });
 
@@ -448,4 +462,105 @@ test('the cli still prints a stack for unexpected errors', () => {
   });
   assert.equal(res.status, 1);
   assert.ok(/\n\s+at /.test(res.stderr), `unexpected errors must keep their stack: ${res.stderr}`);
+});
+
+// The hook is silent on every failure path by design, so an unauthenticated or missing claude CLI
+// makes titling a no-op the user never hears about. install is the one moment that can say so.
+const spawnError = (code) => { const e = new Error(code); e.code = code; return e; };
+const hookRegistered = (paths) =>
+  JSON.stringify(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8'))).includes('claude-session-namer');
+
+// Captures both streams around one call so a test can assert on what install said where.
+function captureBoth(fn) {
+  let err = '';
+  const out = capture(() => { err = captureErr(fn); });
+  return { out, err };
+}
+
+test('a working claude probe adds nothing to the install output', () => {
+  const { settings, paths } = fresh();
+  const spawn = probeOk();
+  const { out, err } = captureBoth(() => settings.install([], { spawn }));
+  assert.equal(spawn.calls.length, 1, 'install must probe the claude CLI');
+  assert.equal(err, '', 'a working CLI is the normal case and says nothing');
+  assert.match(out, /^Installed\./);
+  assert.ok(!/[Ww]arning/.test(out), 'the success output must stay as it was');
+  assert.ok(hookRegistered(paths));
+});
+
+test('a claude probe that exits non-zero warns but still leaves a working install', () => {
+  const { settings, paths } = fresh();
+  const prevExit = process.exitCode;
+  const spawn = fakeSpawn({ status: 1, stdout: '', stderr: '' });
+  const { out, err } = captureBoth(() => settings.install([], { spawn }));
+  assert.match(out, /^Installed\./, 'the install itself succeeded and still says so');
+  assert.match(err, /Warning/);
+  assert.match(err, /claude/);
+  assert.match(err, /silently/, 'the point of the warning is that the hook stays quiet');
+  assert.match(err, /claude \/login/, 'the usual fix belongs in the message');
+  assert.equal(process.exitCode, prevExit, 'a failed probe must not fail the install');
+  assert.ok(hookRegistered(paths), 'the hook is registered whatever the probe says');
+  assert.ok(fs.existsSync(paths.hookScript()));
+});
+
+test('a claude CLI that is not on PATH warns in its own words', () => {
+  const { settings, paths } = fresh();
+  const prevExit = process.exitCode;
+  const spawn = fakeSpawn({ error: spawnError('ENOENT'), status: null, stdout: '', stderr: '' });
+  const { err } = captureBoth(() => settings.install([], { spawn }));
+  assert.match(err, /Warning/);
+  assert.match(err, /not found|not on PATH/, 'a missing CLI is a different problem from a failing one');
+  assert.match(err, /install the claude CLI/i);
+  assert.equal(process.exitCode, prevExit);
+  assert.ok(hookRegistered(paths));
+});
+
+test('a claude probe that times out warns rather than hanging the install', () => {
+  const { settings, paths } = fresh();
+  const prevExit = process.exitCode;
+  // What spawnSync returns when its timeout fires: the child is killed and the error carries the code.
+  const spawn = fakeSpawn({ error: spawnError('ETIMEDOUT'), status: null, signal: 'SIGTERM', stdout: '', stderr: '' });
+  const { err } = captureBoth(() => settings.install([], { spawn }));
+  assert.match(err, /Warning/);
+  assert.match(err, /30 seconds|did not answer|timed out/);
+  assert.equal(process.exitCode, prevExit);
+  assert.ok(hookRegistered(paths));
+});
+
+test('the probe warning carries the claude CLI\'s own stderr line', () => {
+  const { settings } = fresh();
+  const spawn = fakeSpawn({ status: 1, stdout: '', stderr: '\nInvalid API key: 401 authentication_error\n  more detail\n' });
+  const { err } = captureBoth(() => settings.install([], { spawn }));
+  assert.match(err, /Invalid API key: 401 authentication_error/, 'a 401 is the thing the user needs to see');
+  assert.ok(!err.includes('more detail'), 'one line only - the rest is noise in an install summary');
+});
+
+test('the probe runs claude headless with the recursion guard and a timeout', () => {
+  const { settings } = fresh();
+  const spawn = probeOk();
+  captureBoth(() => settings.install([], { spawn }));
+  const { cmd, args, opts } = spawn.calls[0];
+  assert.equal(cmd, 'claude');
+  assert.deepEqual(args, ['-p', 'ping', '--model', 'haiku']);
+  // Headless runs fire Stop hooks too, so without the guard the hook we just installed would spawn a
+  // worker for the probe's own session.
+  assert.equal(opts.env.CLAUDE_SESSION_NAMER_WORKER, '1');
+  assert.equal(opts.env.PATH, process.env.PATH, 'the probe must inherit the rest of the environment');
+  assert.equal(opts.timeout, 30000, 'install must never hang on a wedged CLI');
+  assert.equal(opts.encoding, 'utf8');
+});
+
+test('an install that aborts never reaches the probe', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  fs.writeFileSync(paths.settingsFile(), JSON.stringify({ hooks: [] }));
+  const spawn = probeOk();
+  assert.throws(() => captureBoth(() => settings.install([], { spawn })), /refusing to edit/i);
+  assert.equal(spawn.calls.length, 0, 'nothing was installed, so there is nothing to probe');
+
+  const prevExit = process.exitCode;
+  const rejected = probeOk();
+  captureBoth(() => settings.install(['--nope'], { spawn: rejected }));
+  assert.equal(rejected.calls.length, 0, 'a rejected flag is not an install either');
+  process.exitCode = prevExit;
 });

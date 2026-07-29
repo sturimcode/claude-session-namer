@@ -42,6 +42,16 @@ const capture = (fn) => captureBoth(fn).then((r) => r.out);
 
 const age = (file, ms) => { const d = new Date(Date.now() - ms); fs.utimesSync(file, d, d); };
 const HOUR = 3600_000;
+const DAY = 24 * HOUR;
+
+// A vague, titleable session aged to `ms` old. The id is derived from `n` so a test can assert on the
+// short id backfill prints.
+function agedSession(projectDir, n, ms) {
+  const id = `${String(n).padStart(8, '0')}-1111-1111-1111-111111111111`;
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry(`help me with thing ${n}`), fx.assistantEntry('sure')]);
+  age(file, ms);
+  return { id, short: id.slice(0, 8), file };
+}
 
 // A usage path must set process.exitCode rather than kill the process; restore it either way.
 async function exitCodeOf(fn) {
@@ -427,12 +437,16 @@ test('backfill accepts its own flags and their values without complaint', async 
   const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
   age(file, HOUR);
   const { out, err, code } = await exitCodeOf(() => commands.backfill(
-    ['--dry-run', '--model', 'sonnet', '--project', projectDir],
+    ['--dry-run', '--model', 'sonnet', '--project', projectDir, '--since', '60', '--limit', '10'],
     { runner: () => '[Emails] SES bounce help' },
   ));
   assert.equal(err, '', err);
   assert.equal(code, undefined);
   assert.ok(out.includes('[Emails] SES bounce help'), out);
+
+  const swept = await exitCodeOf(() => commands.backfill(['--all'], { runner: () => '[Emails] SES bounce help' }));
+  assert.equal(swept.err, '', swept.err);
+  assert.equal(swept.code, undefined);
 });
 
 // rename sanitizes on write, but a title the app or the model wrote lands in the transcript
@@ -613,6 +627,108 @@ test('backfill passes the requested model through to the runner', async () => {
   const seen = [];
   await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
   assert.deepEqual(seen, ['sonnet']);
+});
+
+// Backfill scope
+//
+// A sweep of the whole store is hundreds of model calls and most of an hour, spent largely on
+// sessions the user will never scroll back to. The default covers what their sidebar shows - the
+// newest 50 from the last 30 days - and --all is the opt-in to everything.
+
+test('backfill by default leaves a session older than the 30-day window alone', async () => {
+  const { commands, projectDir } = fresh();
+  const recent = agedSession(projectDir, 1, HOUR);
+  const old = agedSession(projectDir, 2, 40 * DAY);
+  const out = await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce help' }));
+  assert.ok(out.includes(recent.short), out);
+  assert.ok(!out.includes(old.short), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(recent.file)), '[Emails] SES bounce help');
+  assert.equal(t.currentTitle(t.readEntries(old.file)), null);
+  // Out-of-scope sessions are not "skipped" - they were never candidates.
+  assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
+});
+
+test('backfill by default stops at the 50 newest sessions in the window', async () => {
+  const { commands, projectDir } = fresh();
+  const made = [];
+  for (let i = 0; i < 51; i++) made.push(agedSession(projectDir, i, HOUR + i * 60_000));
+  const oldest = made[50];
+  let calls = 0;
+  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  assert.equal(calls, 50);
+  assert.ok(out.includes('50 session(s) titled, 0 skipped.'), out);
+  assert.ok(!out.includes(oldest.short), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(oldest.file)), null);
+});
+
+test('backfill --since widens the window and keeps the 50 cap', async () => {
+  const { commands, projectDir } = fresh();
+  const old = agedSession(projectDir, 2, 40 * DAY);
+  const out = await capture(() => commands.backfill(['--since', '90'], { runner: () => '[Emails] SES bounce help' }));
+  assert.ok(out.includes(old.short), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(old.file)), '[Emails] SES bounce help');
+  assert.ok(out.includes('from the last 90 days'), out);
+});
+
+test('backfill --limit overrides the cap', async () => {
+  const { commands, projectDir } = fresh();
+  for (let i = 0; i < 12; i++) agedSession(projectDir, i, HOUR + i * 60_000);
+  let calls = 0;
+  const out = await capture(() => commands.backfill(['--limit', '5'], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  assert.equal(calls, 5);
+  assert.ok(out.includes('5 session(s) titled, 0 skipped.'), out);
+  assert.ok(out.includes('Scanned the 5 newest sessions'), out);
+});
+
+test('backfill --all sweeps the whole history with no window and no cap', async () => {
+  const { commands, projectDir } = fresh();
+  const old = agedSession(projectDir, 900, 40 * DAY);
+  for (let i = 0; i < 51; i++) agedSession(projectDir, i, HOUR + i * 60_000);
+  let calls = 0;
+  const out = await capture(() => commands.backfill(['--all'], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  assert.equal(calls, 52);
+  assert.ok(out.includes(old.short), out);
+  // The scope note is a nudge toward --all, so it has no business in an --all run.
+  assert.ok(!out.includes('use --all for full history'), out);
+});
+
+test('backfill prints the scope it actually scanned before the summary', async () => {
+  const { commands, projectDir } = fresh();
+  agedSession(projectDir, 1, HOUR);
+  const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[Emails] SES bounce help' }));
+  const lines = out.trim().split('\n');
+  assert.equal(lines[lines.length - 2], 'Scanned the 1 newest session from the last 30 days (use --all for full history).');
+  assert.match(lines[lines.length - 1], /^\[dry-run\]/);
+});
+
+test('backfill refuses --all combined with --since or --limit', async () => {
+  const { commands, projectDir } = fresh();
+  agedSession(projectDir, 1, HOUR);
+  for (const argv of [['--all', '--since', '90'], ['--all', '--limit', '5'], ['--all', '--since', '90', '--limit', '5']]) {
+    const res = await exitCodeOf(() => commands.backfill(argv, { runner: () => { throw new Error('must not sweep'); } }));
+    assert.equal(res.out, '', `${argv.join(' ')} swept anyway`);
+    assert.match(res.err, /--all/);
+    assert.match(res.err, /Usage/i);
+    assert.equal(res.code, 1);
+  }
+});
+
+test('backfill rejects a --since or --limit that is not a positive whole number', async () => {
+  const { commands, projectDir } = fresh();
+  agedSession(projectDir, 1, HOUR);
+  const bad = [
+    ['--since', '0'], ['--since', '-5'], ['--since', 'ninety'], ['--since', '1.5'], ['--since'],
+    ['--limit', '0'], ['--limit', '-1'], ['--limit', 'five'], ['--limit'],
+  ];
+  for (const argv of bad) {
+    const res = await exitCodeOf(() => commands.backfill(argv, { runner: () => { throw new Error('must not sweep'); } }));
+    assert.equal(res.out, '', `${argv.join(' ')} swept anyway`);
+    assert.match(res.err, new RegExp(`\\${argv[0]}`), res.err);
+    assert.equal(res.code, 1);
+  }
 });
 
 // sync-plan

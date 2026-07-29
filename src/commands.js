@@ -107,9 +107,18 @@ function badProject(argv) {
   return true;
 }
 
-const BACKFILL_USAGE = 'Usage: claude-session-namer backfill [--dry-run] [--model <model>] [--project <path>]\n';
-const BACKFILL_SWITCHES = ['--dry-run'];
-const BACKFILL_VALUE_FLAGS = ['--model', '--project'];
+// The window a default sweep covers: 30 days is roughly what a user still recognizes in their
+// sidebar, and a two-year-old session isn't worth a model call.
+const DEFAULT_BACKFILL_DAYS = 30;
+// The cap on a default sweep: 50 sessions is a few dozen model calls and a few minutes, where the
+// whole store is hundreds of calls and most of an hour.
+const DEFAULT_BACKFILL_LIMIT = 50;
+
+const DAY_MS = 24 * 3600_000;
+
+const BACKFILL_USAGE = 'Usage: claude-session-namer backfill [--dry-run] [--model <model>] [--project <path>] [--since <days>] [--limit <n>] [--all]\n';
+const BACKFILL_SWITCHES = ['--dry-run', '--all'];
+const BACKFILL_VALUE_FLAGS = ['--model', '--project', '--since', '--limit'];
 
 // A mistyped flag used to be ignored, and `--dryrun` or `--dry` then ran a real, writing sweep on
 // a user who thought they were previewing one. Anything we don't recognize is a usage error.
@@ -126,18 +135,66 @@ function unknownBackfillArgs(argv) {
   return unknown;
 }
 
+// --since and --limit are counts, so anything that isn't a positive whole number is a typo. Coercing
+// it would silently pick a scope the user never asked for - '--since 1.5' as 1 day, '--since abc' as
+// the whole store. Reports the problem and returns null so the caller bails.
+function positiveInt(argv, name, unit) {
+  const raw = opt(argv, name);
+  if (raw === undefined) { usage(`${name} needs a positive whole number of ${unit} - got no value\n`); return null; }
+  if (!/^\d+$/.test(raw.trim()) || Number(raw) < 1) {
+    usage(`${name} needs a positive whole number of ${unit} - got ${JSON.stringify(raw)}\n`);
+    return null;
+  }
+  return Number(raw);
+}
+
+// Resolves how much history the sweep covers. Returns { days, limit }, either of which is null for
+// "no bound", or null on a usage error the caller should bail on.
+function backfillScope(argv) {
+  const hasSince = flag(argv, '--since');
+  const hasLimit = flag(argv, '--limit');
+  // --all means every session, so a window or a cap alongside it is a contradiction rather than a
+  // refinement - guessing which one the user meant is how a sweep ends up narrower or wider than
+  // they think.
+  if (flag(argv, '--all')) {
+    if (hasSince || hasLimit) {
+      const combined = [hasSince && '--since', hasLimit && '--limit'].filter(Boolean).join(' or ');
+      usage(`--all covers your whole history, so it can't be combined with ${combined}\n${BACKFILL_USAGE}`);
+      return null;
+    }
+    return { days: null, limit: null };
+  }
+  let days = DEFAULT_BACKFILL_DAYS;
+  let limit = DEFAULT_BACKFILL_LIMIT;
+  // --since widens the window but leaves the cap in place: asking for a year of history shouldn't
+  // also opt you into a sweep of every session in it.
+  if (hasSince && (days = positiveInt(argv, '--since', 'days')) === null) return null;
+  if (hasLimit && (limit = positiveInt(argv, '--limit', 'sessions')) === null) return null;
+  return { days, limit };
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 async function backfill(argv, testOpts = {}) {
   const unknown = unknownBackfillArgs(argv);
   if (unknown.length) {
     return usage(`Unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}\n${BACKFILL_USAGE}`);
   }
+  const scope = backfillScope(argv);
+  if (!scope) return;
   if (badProject(argv)) return;
   const dryRun = flag(argv, '--dry-run');
   const model = opt(argv, '--model') || 'haiku';
-  const all = sessions(opt(argv, '--project'));
+  // sessions() is newest-first, so the window filters and the cap takes the newest of what's left.
+  let candidates = sessions(opt(argv, '--project'));
+  if (scope.days !== null) {
+    const windowStart = Date.now() - scope.days * DAY_MS;
+    candidates = candidates.filter((s) => s.mtime >= windowStart);
+  }
+  if (scope.limit !== null) candidates = candidates.slice(0, scope.limit);
   const cutoff = Date.now() - ACTIVE_WINDOW_MS;
   let titled = 0, skipped = 0, failed = 0, consecutiveFailures = 0;
-  for (const sess of all) {
+  for (const sess of candidates) {
     if (sess.mtime > cutoff) { skipped++; continue; }
     // Belt and braces over the echo-dir exclusion in sessions(): wherever a worker transcript
     // lands, its first user message is our own prompt, and titling it would mint another.
@@ -167,6 +224,11 @@ async function backfill(argv, testOpts = {}) {
       process.stdout.write(line(sess.mtime, sess.sessionId, res.title));
       if (!testOpts.runner) await sleep(500); // don't machine-gun the API across a long sweep
     } else skipped++;
+  }
+  // A scoped sweep looks identical to a full one from the output, so say what it covered - otherwise
+  // a user whose older sessions went untouched reads the run as broken rather than as bounded.
+  if (scope.days !== null) {
+    process.stdout.write(`Scanned the ${plural(candidates.length, 'newest session')} from the last ${plural(scope.days, 'day')} (use --all for full history).\n`);
   }
   // A dry run is free of writes but not of tokens - name the cost so nobody runs it as a preview.
   const summary = dryRun

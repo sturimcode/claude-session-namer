@@ -15,7 +15,7 @@ A zero-dependency Node CLI plus a Claude Code Stop hook that keeps session title
 
 - Writes native `custom-title` records the Claude Code UI actually displays - no sidecar
 - Titles a session after the first real exchange, then re-titles when the conversation drifts
-- Backfills titles across all existing untitled/vague sessions
+- Backfills titles across existing untitled/vague sessions - recent ones by default (50 newest from the last 30 days), full history on `--all`
 - Manual rename, protect, list, and search commands
 - No API key - titles are generated via `claude -p --model haiku` on the user's existing subscription
 
@@ -67,7 +67,7 @@ The worker owns all logic:
 ## CLI commands
 
 - `install` / `uninstall` - register/remove the Stop hook in `~/.claude/settings.json` (surgical JSON edit, preserves everything else in the file)
-- `backfill [--dry-run] [--model <m>] [--project <path>]` - sweep every project dir under `~/.claude/projects/`, title all vague/untitled sessions; dry-run prints planned titles without writing; throttled to stay clear of rate limits
+- `backfill [--dry-run] [--model <m>] [--project <path>] [--since <days>] [--limit <n>] [--all]` - sweep the project dirs under `~/.claude/projects/` and title vague/untitled sessions. Scoped by default to what a user still recognizes in their sidebar - the 50 newest sessions from the last 30 days - with the scanned scope printed above the summary. `--since` widens the window, `--limit` changes the cap, and `--all` drops both for full history (mutually exclusive with `--since`/`--limit`). Dry-run prints planned titles without writing; throttled to stay clear of rate limits
 - `rename <session-id> "title"` - set a title by hand, marked manual
 - `protect <session-id>` - mark a session manual without touching its title, so whatever it is named now stays
 - `unprotect <session-id>` - drop the manual mark and let drift re-titling resume

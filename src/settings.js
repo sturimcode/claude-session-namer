@@ -164,7 +164,7 @@ function install(argv = []) {
   fs.writeFileSync(paths.hookScript(), wrapperScript(cli), { mode: 0o755 });
   fs.chmodSync(paths.hookScript(), 0o755); // a reinstall over an existing file ignores the mode above
   writeSettings(settings);
-  process.stdout.write(`Installed. Stop hook registered in ${paths.settingsFile()}\nNew sessions will be titled automatically. Run 'claude-session-namer backfill --dry-run' to preview titling your existing sessions.\n`);
+  process.stdout.write(`Installed. Stop hook registered in ${paths.settingsFile()}\nNew sessions will be titled automatically. Run 'claude-session-namer backfill --dry-run' to preview titling your existing sessions (recent ones only - last 30 days, 50 max; add --all for full history).\n`);
 }
 
 function uninstall() {

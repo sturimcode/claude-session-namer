@@ -47,6 +47,24 @@ test('loadConfig defaults prefix to true and round-trips', () => {
   assert.deepEqual(state.loadConfig(), { prefix: false });
 });
 
+test('loadConfig keeps keys it does not know about', () => {
+  const state = freshState();
+  const paths = require('../src/paths');
+  require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
+  require('node:fs').writeFileSync(paths.configFile(), JSON.stringify({ model: 'haiku', prefix: false }));
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false }, 'a save built on loadConfig would otherwise drop them');
+  state.saveConfig({ ...state.loadConfig(), prefix: true });
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: true });
+});
+
+test('loadConfig falls back to defaults on a wrong-shaped config file', () => {
+  const state = freshState();
+  const paths = require('../src/paths');
+  require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
+  require('node:fs').writeFileSync(paths.configFile(), '["oops"]');
+  assert.deepEqual(state.loadConfig(), { prefix: true });
+});
+
 test('recordTitle tracks written titles and prefix counts', () => {
   const state = freshState();
   const s = state.load();

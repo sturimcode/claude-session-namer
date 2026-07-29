@@ -2,11 +2,11 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fx = require('./fixtures');
 
-function fresh() {
-  process.env.CLAUDE_CONFIG_DIR = fx.tmpDir();
+function fresh(dir) {
+  process.env.CLAUDE_CONFIG_DIR = dir || fx.tmpDir();
   for (const m of ['../src/paths', '../src/settings', '../src/state']) delete require.cache[require.resolve(m)];
   return { settings: require('../src/settings'), paths: require('../src/paths'), state: require('../src/state') };
 }
@@ -20,7 +20,16 @@ function capture(fn) {
   return out;
 }
 
+function captureErr(fn) {
+  const orig = process.stderr.write;
+  let out = '';
+  process.stderr.write = (chunk) => { out += chunk; return true; };
+  try { fn(); } finally { process.stderr.write = orig; }
+  return out;
+}
+
 const tmpLeftovers = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+const modeOf = (p) => fs.statSync(p).mode & 0o777;
 
 test('addHook/removeHook round-trip preserves unrelated settings', () => {
   const { settings } = fresh();
@@ -154,4 +163,185 @@ test('install and uninstall print confirmations', () => {
 test('uninstall tolerates a missing wrapper script', () => {
   const { settings } = fresh();
   assert.doesNotThrow(() => capture(() => settings.uninstall()));
+});
+
+test('install preserves the permissions of an existing settings.json', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus' }));
+  fs.chmodSync(paths.settingsFile(), 0o600);
+  capture(() => settings.install());
+  assert.equal(modeOf(paths.settingsFile()), 0o600, 'a private settings.json must not be widened');
+  capture(() => settings.uninstall());
+  assert.equal(modeOf(paths.settingsFile()), 0o600, 'uninstall must not widen it either');
+});
+
+test('install preserves a deliberately group-readable settings.json', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  fs.writeFileSync(paths.settingsFile(), JSON.stringify({ model: 'opus' }));
+  fs.chmodSync(paths.settingsFile(), 0o644);
+  capture(() => settings.install());
+  assert.equal(modeOf(paths.settingsFile()), 0o644, 'the existing mode wins, whatever it is');
+});
+
+test('a settings.json we create ourselves is private', () => {
+  const { settings, paths } = fresh();
+  capture(() => settings.install());
+  assert.equal(modeOf(paths.settingsFile()), 0o600);
+});
+
+test('a hook path containing spaces is quoted in settings.json', () => {
+  const dir = path.join(fx.tmpDir(), 'My Claude Config');
+  fs.mkdirSync(dir, { recursive: true });
+  const { settings, paths } = fresh(dir);
+  assert.match(paths.hookScript(), /\s/, 'this test is only meaningful with a spaced path');
+
+  capture(() => settings.install());
+  const cmd = JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop[0].hooks[0].command;
+  assert.equal(cmd, `"${paths.hookScript()}"`, 'an unquoted spaced path word-splits under sh');
+  // The stored command must be something sh can actually run.
+  assert.equal(spawnSync('sh', ['-c', `command -v ${cmd} >/dev/null`]).status, 0);
+
+  capture(() => settings.install());
+  assert.equal(JSON.parse(fs.readFileSync(paths.settingsFile(), 'utf8')).hooks.Stop.length, 1, 'quoting must not break idempotency');
+  capture(() => settings.uninstall());
+  assert.ok(!fs.readFileSync(paths.settingsFile(), 'utf8').includes('claude-session-namer'), 'quoting must not break uninstall');
+});
+
+test('install writes through a symlinked settings.json', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  const realFile = path.join(fx.tmpDir(), 'dotfiles-settings.json');
+  fs.writeFileSync(realFile, JSON.stringify({ model: 'opus' }));
+  fs.symlinkSync(realFile, paths.settingsFile());
+
+  capture(() => settings.install());
+  assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink(), 'the symlink must survive the write');
+  const conf = JSON.parse(fs.readFileSync(realFile, 'utf8'));
+  assert.equal(conf.model, 'opus');
+  assert.ok(JSON.stringify(conf.hooks.Stop).includes('claude-session-namer'), 'the link target must get the content');
+  assert.deepEqual(tmpLeftovers(path.dirname(realFile)), []);
+
+  capture(() => settings.uninstall());
+  assert.ok(fs.lstatSync(paths.settingsFile()).isSymbolicLink());
+  assert.ok(!fs.readFileSync(realFile, 'utf8').includes('claude-session-namer'));
+});
+
+test('addHook refuses to edit a malformed hooks block', () => {
+  const { settings } = fresh();
+  const cmd = '/x/claude-session-namer/hook.sh';
+  for (const bad of [{ hooks: [] }, { hooks: 'oops' }, { hooks: { Stop: {} } }, { hooks: { Stop: 'oops' } }]) {
+    assert.throws(
+      () => settings.addHook(structuredClone(bad), cmd),
+      /refusing to edit/i,
+      `${JSON.stringify(bad)} must be refused, not silently edited or crashed on`,
+    );
+  }
+});
+
+test('removeHook refuses to edit a malformed hooks block', () => {
+  const { settings } = fresh();
+  for (const bad of [{ hooks: [] }, { hooks: 'oops' }, { hooks: { Stop: {} } }, { hooks: { Stop: 'oops' } }]) {
+    assert.throws(() => settings.removeHook(structuredClone(bad)), /refusing to edit/i, JSON.stringify(bad));
+  }
+});
+
+test('install aborts on a malformed hooks block and changes nothing', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  const raw = JSON.stringify({ model: 'opus', hooks: [] });
+  fs.writeFileSync(paths.settingsFile(), raw);
+  assert.throws(
+    () => capture(() => settings.install()),
+    (e) => e.expected === true && /refusing to edit/i.test(e.message),
+    'a hooks block we cannot read must abort the install loudly',
+  );
+  assert.equal(fs.readFileSync(paths.settingsFile(), 'utf8'), raw, 'the user\'s file must be left untouched');
+  assert.ok(!fs.existsSync(paths.hookScript()), 'no wrapper may be left behind by a refused install');
+});
+
+test('reinstall restores the wrapper exec bit', () => {
+  const { settings, paths } = fresh();
+  capture(() => settings.install());
+  fs.chmodSync(paths.hookScript(), 0o644);
+  capture(() => settings.install());
+  assert.equal(modeOf(paths.hookScript()), 0o755, 'a non-executable wrapper 126s at every Stop');
+});
+
+test('wrapper exits quietly when no node exists at hook time', () => {
+  const { settings, paths } = fresh();
+  capture(() => settings.install());
+  const wrapper = fs.readFileSync(paths.hookScript(), 'utf8');
+  // Simulate a machine with no node at all: the pinned fallback is gone and PATH has none.
+  const noNode = path.join(fx.tmpDir(), 'deleted-node');
+  const script = path.join(fx.tmpDir(), 'wrapper-no-node.sh');
+  fs.writeFileSync(script, wrapper.split(process.execPath).join(noNode), { mode: 0o755 });
+  const res = spawnSync('/bin/sh', [script], { env: { PATH: '/nonexistent' }, encoding: 'utf8' });
+  assert.equal(res.status, 0, 'a missing node must not fail the Stop hook');
+  assert.equal(res.stderr, '', 'and must not print anything at every Stop');
+});
+
+test('wrapper survives shell metacharacters in the paths it embeds', () => {
+  const { settings } = fresh();
+  const dir = path.join(fx.tmpDir(), 'we$ird `back` "quoted" \\slashed dir');
+  fs.mkdirSync(dir, { recursive: true });
+  const cli = path.join(dir, 'echo-argv.js');
+  fs.writeFileSync(cli, 'process.stdout.write(process.argv[1] + "|" + process.argv[2]);');
+  const script = path.join(fx.tmpDir(), 'wrapper-meta.sh');
+  fs.writeFileSync(script, settings.wrapperScript(cli), { mode: 0o755 });
+  execFileSync('sh', ['-n', script]);
+  assert.equal(execFileSync('sh', [script], { encoding: 'utf8' }), `${cli}|hook`);
+});
+
+test('install rejects unknown flags and changes nothing', () => {
+  const { settings, paths } = fresh();
+  const prevExit = process.exitCode;
+  const err = captureErr(() => capture(() => settings.install(['--no-prefx', 'backfill'])));
+  assert.match(err, /--no-prefx/);
+  assert.match(err, /Usage/);
+  assert.equal(process.exitCode, 1);
+  process.exitCode = prevExit;
+  assert.ok(!fs.existsSync(paths.settingsFile()), 'a rejected install must not touch settings.json');
+  assert.ok(!fs.existsSync(paths.hookScript()), 'a rejected install must not write the wrapper');
+});
+
+test('uninstall on a never-installed setup creates no settings.json', () => {
+  const { settings, paths } = fresh();
+  capture(() => settings.uninstall());
+  assert.ok(!fs.existsSync(paths.settingsFile()), 'nothing to remove means nothing to write');
+});
+
+test('install --no-prefix leaves unrelated config keys alone', () => {
+  const { settings, paths, state } = fresh();
+  fs.mkdirSync(paths.stateDir(), { recursive: true });
+  fs.writeFileSync(paths.configFile(), JSON.stringify({ model: 'haiku' }));
+  capture(() => settings.install(['--no-prefix']));
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false });
+});
+
+test('the cli prints expected errors without a stack trace', () => {
+  const dir = fx.tmpDir();
+  fs.writeFileSync(path.join(dir, 'settings.json'), '{ "model": "opus", oops');
+  const cli = path.resolve(__dirname, '..', 'bin', 'cli.js');
+  const res = spawnSync(process.execPath, [cli, 'install'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /not valid JSON/);
+  assert.ok(!/\n\s+at /.test(res.stderr), `expected errors must not dump a stack: ${res.stderr}`);
+});
+
+test('the cli still prints a stack for unexpected errors', () => {
+  const dir = fx.tmpDir();
+  // settings.json as a directory is not a case we model - the rename fails with a raw fs error.
+  fs.mkdirSync(path.join(dir, 'settings.json'));
+  const cli = path.resolve(__dirname, '..', 'bin', 'cli.js');
+  const res = spawnSync(process.execPath, [cli, 'install'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 1);
+  assert.ok(/\n\s+at /.test(res.stderr), `unexpected errors must keep their stack: ${res.stderr}`);
 });

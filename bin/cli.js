@@ -25,4 +25,10 @@ async function main() {
   if (cmd === 'uninstall') return require('../src/settings').uninstall();
   return require('../src/commands')[cmd](process.argv.slice(3));
 }
-main().catch((err) => { process.stderr.write(String(err && err.stack || err) + '\n'); process.exit(1); });
+// Errors we raise on purpose (a corrupt settings.json, a hooks block we refuse to edit) are
+// instructions to the user, so they print as a plain message. Anything else is a bug and keeps its
+// stack. Either way the exit code is 1.
+main().catch((err) => {
+  process.stderr.write((err && err.expected ? err.message : String(err && err.stack || err)) + '\n');
+  process.exit(1);
+});

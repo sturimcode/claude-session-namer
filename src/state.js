@@ -45,10 +45,14 @@ function recordTitle(s, id, title, turns) {
 
 const topPrefixes = (s, n = 15) => Object.entries(s.prefixes).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k);
 
+// Unknown keys are carried through rather than dropped: callers save with
+// saveConfig({ ...loadConfig(), <field> }), so anything this function discards is anything a
+// later version - or the user's own hand-edit - would silently lose on the next write.
 function loadConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(paths.configFile(), 'utf8'));
-    return { prefix: c.prefix !== false };
+    if (!isPlainObject(c)) return { prefix: true };
+    return { ...c, prefix: c.prefix !== false };
   } catch { return { prefix: true }; }
 }
 

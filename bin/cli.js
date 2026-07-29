@@ -9,6 +9,7 @@ Usage: claude-session-namer <command>
   install     Register the Stop hook in Claude Code settings
   uninstall   Remove the Stop hook
   backfill    Title all existing vague/untitled sessions (--dry-run, --model <m>, --project <path>)
+              (--dry-run still calls the model per session)
   rename      Set a session title by hand: rename <session-id> "title"
   list        List sessions with titles (--project <path>)
   search      Find sessions by title or content: search <query>

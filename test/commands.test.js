@@ -1,8 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const fx = require('./fixtures');
+
+// The project dir Claude Code writes worker-call transcripts into, given that the titler spawns
+// `claude -p` from the OS temp dir. realpath matters on macOS, where /var is a symlink.
+const tmpProjectName = () => fs.realpathSync(os.tmpdir()).replace(/[^a-zA-Z0-9]/g, '-');
 
 function fresh() {
   const { configDir, projectDir } = fx.fakeConfig();
@@ -73,6 +78,15 @@ test('sessions sorts newest first and filters to one project dir', () => {
   assert.deepEqual(commands.sessions('-Users-other').map((s) => s.sessionId.slice(0, 3)), ['bbb']);
 });
 
+test('sessions skips the worker-echo project dir for the OS temp dir', () => {
+  const { commands, projectDir, configDir } = fresh();
+  const echo = path.join(configDir, 'projects', tmpProjectName());
+  fs.mkdirSync(echo, { recursive: true });
+  fx.writeTranscript(echo, 'ccc33333-3333-3333-3333-333333333333', [fx.userEntry('You title chat sessions')]);
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x')]);
+  assert.deepEqual(commands.sessions().map((s) => s.sessionId.slice(0, 3)), ['aaa']);
+});
+
 test('rename appends record and marks manual', async () => {
   const { commands, projectDir } = fresh();
   const id = 'aaa11111-1111-1111-1111-111111111111';
@@ -118,6 +132,28 @@ test('rename reports an unknown id and a missing title without throwing', async 
   assert.equal(noTitle.code, 1);
 });
 
+test('rename flattens newlines and terminal escapes into a single row', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('x')]);
+  await capture(() => commands.rename([id, 'Line one\nline\u001b[31m two']));
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Line one line two');
+  const lines = (await capture(() => commands.list([]))).trim().split('\n');
+  assert.equal(lines.length, 1);
+});
+
+test('rename rejects a title that sanitizes down to nothing', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('x')]);
+  const { err, code } = await exitCodeOf(() => commands.rename([id, '\n\t\u001b[0m']));
+  assert.match(err, /Usage/i);
+  assert.equal(code, 1);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
 test('list prints titles, search filters', async () => {
   const { commands, projectDir } = fresh();
   fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about ses bounces'), fx.titleEntry('[Emails] SES fix')]);
@@ -140,6 +176,33 @@ test('list is newest first and caps at 50', async () => {
   const lines = (await capture(() => commands.list([]))).trim().split('\n');
   assert.equal(lines.length, 50);
   assert.ok(lines[0].includes('00000054'));
+});
+
+test('list dates the session in the local timezone', async () => {
+  const { commands, projectDir } = fresh();
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x')]);
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.startsWith(new Date(fs.statSync(file).mtimeMs).toLocaleDateString('en-CA') + '  '), out);
+});
+
+test('list pads a short session id so the title column stays aligned', async () => {
+  const { commands, projectDir } = fresh();
+  fx.writeTranscript(projectDir, 'ab', [fx.userEntry('x')]);
+  const out = await capture(() => commands.list([]));
+  assert.ok(out.includes('  ab        (untitled)'), JSON.stringify(out));
+});
+
+test('list and backfill reject a --project that resolves to nothing', async () => {
+  const { commands } = fresh();
+  const listed = await exitCodeOf(() => commands.list(['--project', '/no/such/project']));
+  assert.equal(listed.out, '');
+  assert.match(listed.err, /No project directory: \/no\/such\/project/);
+  assert.equal(listed.code, 1);
+
+  const swept = await exitCodeOf(() => commands.backfill(['--project', '-Users-nope'], { runner: () => 'X' }));
+  assert.equal(swept.out, '');
+  assert.match(swept.err, /No project directory: -Users-nope/);
+  assert.equal(swept.code, 1);
 });
 
 test('search matches titles case-insensitively and reports a missing query', async () => {
@@ -174,6 +237,13 @@ test('config keeps unknown keys and rejects bad arguments', async () => {
   assert.match(bad.err, /Usage/i);
   assert.equal(bad.code, 1);
   assert.equal(state.loadConfig().prefix, false); // unchanged
+
+  // A trailing argument means the user meant something we don't support - say so rather than
+  // quietly acting on the part we understood.
+  const garbage = await exitCodeOf(() => commands.config(['prefix', 'on', 'globally']));
+  assert.match(garbage.err, /Usage/i);
+  assert.equal(garbage.code, 1);
+  assert.equal(state.loadConfig().prefix, false); // unchanged
 });
 
 test('backfill dry-run titles vague sessions without writing', async () => {
@@ -185,9 +255,43 @@ test('backfill dry-run titles vague sessions without writing', async () => {
   fs.utimesSync(file, old, old);
   const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[Emails] SES bounce help' }));
   assert.ok(out.includes('[Emails] SES bounce help'));
-  assert.ok(out.includes('[dry-run]'));
+  // A dry run still spends a model call per session - the summary has to say so.
+  assert.ok(out.includes('[dry-run] 1 session(s) would be titled (each cost one model call), 0 skipped.'), out);
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
+test('backfill skips its own worker transcripts by prompt signature', async () => {
+  const { commands, projectDir } = fresh();
+  const { PROMPT_SIGNATURE } = require('../src/titler');
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [
+    fx.userEntry(`${PROMPT_SIGNATURE}\n\nCurrent title: (none)\n\nConversation excerpt:\nUser: hi`),
+    fx.assistantEntry('[Emails] SES fix'),
+  ]);
+  age(file, HOUR);
+  const out = await capture(() => commands.backfill([], { runner: () => { throw new Error('should not be called'); } }));
+  assert.ok(out.includes('0 session(s) titled, 1 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
+test('backfill aborts the sweep after five consecutive failures', async () => {
+  const { commands, projectDir } = fresh();
+  for (let i = 0; i < 7; i++) {
+    const file = fx.writeTranscript(projectDir, `${String(i).padStart(8, '0')}-1111-1111-1111-111111111111`, [
+      fx.userEntry(`help me with thing ${i}`),
+      fx.assistantEntry('sure'),
+    ]);
+    age(file, HOUR);
+  }
+  let calls = 0;
+  const { err, code } = await exitCodeOf(() => commands.backfill([], {
+    runner: () => { calls++; throw new Error('claude exited 1'); },
+  }));
+  assert.equal(calls, 5);
+  assert.match(err, /5 consecutive failures/);
+  assert.match(err, /claude exited 1/);
+  assert.equal(code, 1);
 });
 
 test('backfill leaves likely-active sessions alone', async () => {

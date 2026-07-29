@@ -6,6 +6,10 @@ const MAX_TITLE_CHARS = 45;
 // otherwise a short single-token title gets gutted down to a fragment.
 const MIN_WORD_CUT_INDEX = 20;
 
+// The prompt's opening line, exported so a sweep can recognize a transcript of one of our own
+// worker calls and refuse to title it. Keep it the literal first line of buildPrompt's output.
+const PROMPT_SIGNATURE = 'You title chat sessions between a developer and a coding assistant.';
+
 const USE_PREFIX_EXAMPLES = [
   '[Emails] SES bounce rate investigation',
   '[Client Controls] Cascade validation rules',
@@ -41,7 +45,7 @@ function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = tr
 
   const examples = usePrefix ? USE_PREFIX_EXAMPLES : BARE_PHRASE_EXAMPLES;
 
-  return `You title chat sessions between a developer and a coding assistant.
+  return `${PROMPT_SIGNATURE}
 
 ${header.join('\n')}
 
@@ -115,4 +119,4 @@ function generateTitle({ currentTitle, prefixes, excerpt, usePrefix = true, mode
   return parseResponse(runner(buildPrompt({ currentTitle, prefixes, excerpt, usePrefix }), model));
 }
 
-module.exports = { buildPrompt, parseResponse, runClaude, generateTitle };
+module.exports = { buildPrompt, parseResponse, runClaude, generateTitle, PROMPT_SIGNATURE };

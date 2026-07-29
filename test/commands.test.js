@@ -237,6 +237,65 @@ test('an explicit but empty --project is a usage error, not a sweep of everythin
   assert.equal(t.currentTitle(t.readEntries(file)), null);
 });
 
+// `--project` typed with nothing after it reads as undefined - the same value a missing flag gives -
+// so the filter fell through to "no filter" and the sweep took in every project in the store.
+test('a dangling --project is a usage error, not a sweep of everything', async () => {
+  const { commands, projectDir } = fresh();
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+
+  const listed = await exitCodeOf(() => commands.list(['--project']));
+  assert.equal(listed.out, '', 'list swept the whole store for a dangling --project');
+  assert.match(listed.err, /--project/);
+  assert.equal(listed.code, 1);
+
+  const swept = await exitCodeOf(() => commands.backfill(['--project'], { runner: () => { throw new Error('must not sweep'); } }));
+  assert.equal(swept.out, '', 'backfill swept the whole store for a dangling --project');
+  assert.match(swept.err, /--project/);
+  assert.equal(swept.code, 1);
+
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+});
+
+// A mistyped flag used to be ignored, so `--dryrun` and `--dry` ran a real, writing sweep while the
+// user believed they were previewing one.
+test('backfill refuses an unknown flag instead of running a real sweep', async () => {
+  const { commands, projectDir } = fresh();
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  const t = require('../src/transcript');
+
+  for (const typo of ['--dryrun', '--dry']) {
+    let calls = 0;
+    const res = await exitCodeOf(() => commands.backfill([typo], { runner: () => { calls++; return '[X] Nope'; } }));
+    assert.equal(calls, 0, `${typo} reached the runner`);
+    assert.equal(res.out, '');
+    assert.match(res.err, new RegExp(`Unknown option: \\${typo}`));
+    assert.match(res.err, /Usage/i);
+    assert.equal(res.code, 1);
+    assert.equal(t.currentTitle(t.readEntries(file)), null);
+  }
+
+  // several at once are all named, so the user fixes the whole line in one go
+  const many = await exitCodeOf(() => commands.backfill(['--dryrun', 'extra'], { runner: () => { throw new Error('must not sweep'); } }));
+  assert.match(many.err, /Unknown options: --dryrun, extra/);
+  assert.equal(many.code, 1);
+});
+
+test('backfill accepts its own flags and their values without complaint', async () => {
+  const { commands, projectDir } = fresh();
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  const { out, err, code } = await exitCodeOf(() => commands.backfill(
+    ['--dry-run', '--model', 'sonnet', '--project', projectDir],
+    { runner: () => '[Emails] SES bounce help' },
+  ));
+  assert.equal(err, '', err);
+  assert.equal(code, undefined);
+  assert.ok(out.includes('[Emails] SES bounce help'), out);
+});
+
 // rename sanitizes on write, but a title the app or the model wrote lands in the transcript
 // unfiltered - the display path has to hold the line too.
 test('list and search strip escapes from a title written outside rename', async () => {

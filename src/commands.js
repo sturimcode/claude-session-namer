@@ -85,7 +85,14 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 // existence check, then reads as falsy downstream and sweeps every session in the store.
 function badProject(argv) {
   const p = opt(argv, '--project');
-  if (p === undefined) return false;
+  // A flag typed with nothing after it reads as undefined, which is also what a missing flag
+  // reads as - so the same silent whole-store sweep. The flag being present is what separates
+  // "the user named a project and lost the value" from "the user asked for everything".
+  if (p === undefined) {
+    if (!flag(argv, '--project')) return false;
+    usage('--project needs a project path or directory name - got no value\n');
+    return true;
+  }
   if (p.trim() === '') {
     usage('--project needs a project path or directory name - got an empty value\n');
     return true;
@@ -95,7 +102,30 @@ function badProject(argv) {
   return true;
 }
 
+const BACKFILL_USAGE = 'Usage: claude-session-namer backfill [--dry-run] [--model <model>] [--project <path>]\n';
+const BACKFILL_SWITCHES = ['--dry-run'];
+const BACKFILL_VALUE_FLAGS = ['--model', '--project'];
+
+// A mistyped flag used to be ignored, and `--dryrun` or `--dry` then ran a real, writing sweep on
+// a user who thought they were previewing one. Anything we don't recognize is a usage error.
+// A value flag consumes the token after it whatever that token looks like, matching what opt()
+// reads as its value - so the two can never disagree about which tokens are values.
+function unknownBackfillArgs(argv) {
+  const unknown = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (BACKFILL_SWITCHES.includes(a)) continue;
+    if (BACKFILL_VALUE_FLAGS.includes(a)) { i++; continue; }
+    unknown.push(a);
+  }
+  return unknown;
+}
+
 async function backfill(argv, testOpts = {}) {
+  const unknown = unknownBackfillArgs(argv);
+  if (unknown.length) {
+    return usage(`Unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}\n${BACKFILL_USAGE}`);
+  }
   if (badProject(argv)) return;
   const dryRun = flag(argv, '--dry-run');
   const model = opt(argv, '--model') || 'haiku';

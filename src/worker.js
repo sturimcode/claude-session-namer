@@ -88,6 +88,29 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
     return { action: 'kept', title: vague ? null : title };
   }
 
+  // A rename that lands inside the same 90-second window is the other thing the reload has to catch.
+  // Our title would be appended after the user's and win as the last record, and the manual flag
+  // their rename set would then gate out every later run - so the title we wrote over theirs would
+  // stick for good. Both signals get re-read here, because a rename shows up in one or the other:
+  // our own CLI writes state and transcript, the app writes only the transcript.
+  if (freshSess.manual) return { action: 'manual-skip' };
+  const freshEntries = t.readEntries(transcriptPath);
+  const freshInfo = t.titleInfo(freshEntries);
+  const startedWith = info.source === 'custom' ? info.title : null;
+  // Same test as the pre-generate one - a custom-title that is ours, or vague, is not a human's -
+  // narrowed to titles that weren't there on the first read, so the vague title a session started
+  // with doesn't read as a rename that just happened.
+  if (
+    freshInfo.source === 'custom'
+    && freshInfo.title !== startedWith
+    && !freshSess.written.includes(freshInfo.title)
+    && !t.isVagueTitle(freshInfo.title, t.firstUserText(freshEntries))
+  ) {
+    freshSess.manual = true;
+    stateMod.save(fresh);
+    return { action: 'manual-skip' };
+  }
+
   // Claim the title in state BEFORE it can appear in the transcript: a crash between the two
   // writes would otherwise leave our own title looking like a human's on the next run.
   if (!freshSess.written.includes(generated)) freshSess.written.push(generated);

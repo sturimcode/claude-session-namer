@@ -232,6 +232,56 @@ test('a concurrent state write during a generation that ends in KEEP is not lost
   assert.equal(after.sessions.s2.manual, true);
 });
 
+// A rename that lands inside the 90-second generate window used to lose: our title was appended
+// after theirs and won as the last record, and the manual flag their rename set then blocked every
+// later correction - so the title we clobbered theirs with stuck for good.
+test('a rename that lands mid-generate is not clobbered by the title we asked for', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    // the user renames the session while `claude -p` is still blocked
+    t.appendTitleRecord(file, 's1', 'My hand-written name');
+    const other = state.load();
+    state.recordTitle(other, 's1', 'My hand-written name', 2);
+    state.session(other, 's1').manual = true;
+    state.save(other);
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
+  assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
+  assert.equal(state.load().sessions.s1.manual, true);
+});
+
+// The transcript is the only signal when the rename came from the app rather than our own CLI:
+// no state write, just a custom-title record that wasn't there when we started.
+test('a foreign title appearing mid-generate is left alone and marks the session manual', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    t.appendTitleRecord(file, 's1', 'Renamed in the app');
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Renamed in the app');
+  assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
+  assert.equal(state.load().sessions.s1.manual, true);
+  assert.deepEqual(state.load().sessions.s1.written, []);
+});
+
+// The re-check must not fire on the title that was already there when we started - a session whose
+// name is the app's vague default still reads as a custom-title record on the second read.
+test('the mid-generate re-check ignores the vague title the session started with', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('New session')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES triage');
+  assert.equal(state.load().sessions.s1.manual, false);
+});
+
 // The kept title is what the session is left with. A title that reads vague is not one, even when
 // a string is present - reporting 'New session' as the kept title would misread as a real name.
 test('a KEEP on a vague-but-present title reports no title', () => {

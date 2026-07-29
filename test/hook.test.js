@@ -2,6 +2,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const fx = require('./fixtures');
 const hook = require('../src/hook');
 
@@ -9,7 +11,21 @@ const hook = require('../src/hook');
 function fakeSpawn() {
   const calls = [];
   const fn = (cmd, args, opts) => {
-    const child = { unrefed: false, unref() { child.unrefed = true; } };
+    const child = { unrefed: false, unref() { child.unrefed = true; }, on() {} };
+    calls.push({ cmd, args, opts, child });
+    return child;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+// A fake spawn whose child is a real EventEmitter, so an unhandled 'error' throws for real.
+function emittingSpawn() {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    const child = new EventEmitter();
+    child.unrefed = false;
+    child.unref = () => { child.unrefed = true; };
     calls.push({ cmd, args, opts, child });
     return child;
   };
@@ -93,8 +109,58 @@ test('run never throws when the spawn itself fails', async () => {
   await hook.run({ spawn: boom, readInput: async () => JSON.stringify({ session_id: 'abc', transcript_path: file }), env: {} });
 });
 
-test('run defaults to the real process env and stdin reader', async () => {
-  // Called with no deps (as bin/cli.js does) it must not throw; stdin is not a TTY
-  // stream under the test runner, so this exercises the default readInput path.
+test('run never throws when the spawn fails asynchronously', async () => {
+  const file = transcriptFile();
+  const spawn = emittingSpawn();
+  await hook.run({ spawn, readInput: async () => JSON.stringify({ session_id: 'abc', transcript_path: file }), env: {} });
+
+  assert.equal(spawn.calls.length, 1);
+  const { child } = spawn.calls[0];
+  assert.equal(child.unrefed, true);
+  assert.ok(child.listenerCount('error') > 0, 'hook must listen for the async spawn error');
+
+  // ENOENT and friends arrive after run() has returned; unhandled, an EventEmitter
+  // 'error' throws and takes the whole hook process down.
+  const err = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+  await new Promise((resolve, reject) => {
+    setImmediate(() => {
+      try { child.emit('error', err); resolve(); } catch (e) { reject(e); }
+    });
+  });
+});
+
+test('run tolerates a partial deps object and falls back to the real defaults', async () => {
+  // bin/cli.js calls run() with nothing; passing only some deps must not throw.
   await assert.doesNotReject(hook.run({ spawn: fakeSpawn(), env: { CLAUDE_SESSION_NAMER_WORKER: '1' } }));
+});
+
+test('readStdin concatenates chunks and resolves on end', async () => {
+  const stream = new PassThrough();
+  const read = hook.readStdin(stream);
+  stream.write('{"session_id":"abc",');
+  stream.write('"transcript_path":"/tmp/x.jsonl"}');
+  stream.end();
+  assert.equal(await read, '{"session_id":"abc","transcript_path":"/tmp/x.jsonl"}');
+});
+
+test('readStdin resolves with what it has when the stream errors', async () => {
+  const stream = new PassThrough();
+  const read = hook.readStdin(stream);
+  stream.write('partial');
+  await new Promise((r) => setImmediate(r));
+  stream.emit('error', new Error('EPIPE'));
+  assert.equal(await read, 'partial');
+});
+
+test('readStdin releases the stream when the timeout fires', async () => {
+  const stream = new PassThrough();
+  const started = Date.now();
+  const read = hook.readStdin(stream, 50);
+  stream.write('held open');
+  // No end() - a writer that never closes the pipe is exactly the hang case.
+  assert.equal(await read, 'held open');
+  assert.ok(Date.now() - started < 1000, 'must resolve on the injected timeout, not hang');
+  assert.equal(stream.listenerCount('data'), 0, 'data listener must be removed so the event loop can drain');
+  assert.equal(stream.listenerCount('end'), 0);
+  assert.equal(stream.listenerCount('error'), 0);
 });

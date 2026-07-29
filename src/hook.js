@@ -18,13 +18,30 @@ function parsePayload(raw) {
 
 // Resolves with whatever arrived on stdin. The timeout is a floor under a stdin that
 // never ends - the hook resolves with what it has rather than hanging the session.
-function readStdin() {
+// Resolving alone isn't enough: the listeners have to come off and the stream has to be
+// paused, or a writer that never closes the pipe keeps the event loop alive after we're done.
+function readStdin(stream = process.stdin, timeoutMs = STDIN_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let data = '';
-    process.stdin.on('data', (c) => (data += c));
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve(data));
-    setTimeout(() => resolve(data), STDIN_TIMEOUT_MS).unref();
+    let settled = false;
+    let timer;
+    const onData = (c) => (data += c);
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.removeListener('data', onData);
+      stream.removeListener('end', done);
+      stream.removeListener('error', done);
+      stream.pause();
+      resolve(data);
+    };
+    stream.setEncoding('utf8');
+    stream.on('data', onData);
+    stream.on('end', done);
+    stream.on('error', done);
+    timer = setTimeout(done, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
   });
 }
 
@@ -46,8 +63,9 @@ async function run({ spawn = childSpawn, readInput = readStdin, env = process.en
     // Detached + stdio ignored + unref'd: the worker blocks up to 90s on `claude -p`,
     // and the hook must not wait for it or hold the session's streams open.
     const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {}); // spawn failures arrive async; unhandled they crash the hook
     child.unref();
   } catch { /* a hook never fails loudly */ }
 }
 
-module.exports = { run, parsePayload };
+module.exports = { run, parsePayload, readStdin };

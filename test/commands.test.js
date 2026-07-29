@@ -656,6 +656,21 @@ test('sync-plan excludes user-renamed sessions unless --all is passed', async ()
   });
 });
 
+// The store can hold more than one record for the same session - the app writes a fresh file when it
+// re-registers a session, and the older one stays behind. If any of them says the user typed the
+// name, the name is theirs: excluding only the record that carries the marker would still emit a
+// push against its sibling and overwrite what they typed.
+test('sync-plan excludes a session the user renamed even when the store also holds an auto record for it', async () => {
+  const { commands, projectDir } = fresh({ [USER]: { sessionId: 'local_bbb', title: 'Revisit Monday', titleSource: 'user' } });
+  fx.appStoreRecord(process.env.CLAUDE_SESSION_NAMER_APP_STORE, USER, { sessionId: 'local_bbb_old', title: 'New session', titleSource: 'auto' }, 'dup');
+  fx.writeTranscript(projectDir, USER, [fx.userEntry('what did we decide on aliases'), fx.titleEntry('[Emails] Alias domain split', USER)]);
+
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+
+  const all = jsonLines(await capture(() => commands['sync-plan'](['--all'])));
+  assert.deepEqual(all.map((r) => r.sessionId).sort(), ['local_bbb', 'local_bbb_old']);
+});
+
 // Nothing to push is the common case, and a push is only worth making when our title is both real
 // and different. A vague title is what the app already has.
 test('sync-plan skips matching titles, vague titles, and sessions with no transcript', async () => {

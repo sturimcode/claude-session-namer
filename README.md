@@ -89,7 +89,11 @@ $ claude-session-namer sync-plan
 {"sessionId":"local_a1b2c3","currentTitle":"New session","newTitle":"[Emails] SES bounce triage"}
 ```
 
-The command writes nothing - not to the app, not to your transcripts. Applying the plan takes something that can call the app's session-rename API: a scheduled Claude session, or any agent with that tool, fed this output. Sessions you renamed in the app yourself are left out; `--all` includes them. Nothing to push means no output.
+`currentTitle` is null when the app has no name for the session yet.
+
+The command writes nothing - not to the app, not to your transcripts. Applying the plan takes something that can call the app's session-rename API: a scheduled Claude session, or any agent with that tool, fed this output. Nothing to push means no output.
+
+Sessions you renamed in the app yourself are left out. `--all` puts them back in, and that is the only thing it does: it lets a push overwrite a name you typed in the app. It does not help with the opposite case, where the app is showing a good name and the transcript is still on a vague one - there is no diff to push there, and `rename <session-id> "title"` is the fix.
 
 ## Cost
 

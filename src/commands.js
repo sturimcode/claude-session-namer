@@ -277,8 +277,12 @@ async function syncPlan(argv) {
   // resolving each one's transcript on its own would re-read every project dir per record.
   const byId = new Map();
   for (const sess of sessions()) if (!byId.has(sess.sessionId)) byId.set(sess.sessionId, sess);
+  // The exclusion is per session, not per record. The store can hold several records for one
+  // session, and only one of them need carry the user marker for the name to be theirs - checking
+  // this row's own titleSource alone would still emit a push against a stale sibling row.
+  const renamed = appstore.userRenamedIds();
   for (const entry of appstore.entries()) {
-    if (!includeRenamed && entry.titleSource === 'user') continue;
+    if (!includeRenamed && (entry.titleSource === 'user' || renamed.has(entry.cliSessionId))) continue;
     // A row the app's API can't be pointed at is not actionable, whatever its title says.
     if (typeof entry.daemonSessionId !== 'string' || !entry.daemonSessionId) continue;
     const sess = byId.get(entry.cliSessionId);

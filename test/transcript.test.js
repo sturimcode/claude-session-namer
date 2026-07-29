@@ -96,6 +96,17 @@ test('isVagueTitle ignores case, surrounding whitespace and trailing punctuation
   assert.equal(t.isVagueTitle('   ', null), true);
 });
 
+test('appendTitleRecord appends exactly one valid line', () => {
+  const dir = fx.tmpDir();
+  const file = fx.writeTranscript(dir, 's1', [fx.userEntry('hello')]);
+  t.appendTitleRecord(file, 's1', '[Test] Hello session');
+  const entries = t.readEntries(file);
+  assert.equal(t.currentTitle(entries), '[Test] Hello session');
+  const raw = require('node:fs').readFileSync(file, 'utf8');
+  assert.ok(raw.endsWith('\n'));
+  assert.equal(raw.trim().split('\n').length, 2);
+});
+
 test('buildExcerpt includes early and late turns within cap', () => {
   const entries = [];
   for (let i = 0; i < 30; i++) { entries.push(fx.userEntry(`user message ${i} ` + 'x'.repeat(400))); entries.push(fx.assistantEntry(`reply ${i} ` + 'y'.repeat(400))); }

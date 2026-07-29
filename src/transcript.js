@@ -100,4 +100,9 @@ function buildExcerpt(entries, maxChars = 4000) {
   return out;
 }
 
-module.exports = { readEntries, titleInfo, currentTitle, userText, assistantText, countUserTurns, firstUserText, isVagueTitle, buildExcerpt };
+// Single atomic append - the app tails the transcript, so the line must be written whole
+function appendTitleRecord(file, sessionId, title) {
+  fs.appendFileSync(file, JSON.stringify({ type: 'custom-title', customTitle: title, sessionId }) + '\n');
+}
+
+module.exports = { readEntries, titleInfo, currentTitle, appendTitleRecord, userText, assistantText, countUserTurns, firstUserText, isVagueTitle, buildExcerpt };

@@ -52,7 +52,7 @@ The worker owns all logic:
 
 ### Title format
 
-`[Prefix] Short phrase`, hard-capped at 45 characters. Prefixes are free-form but normalized: the prompt includes the user's previously-used prefixes with an instruction to reuse one when it fits and coin a new one only for a genuinely new workstream. Seen prefixes and counts live in state.
+`[Prefix] Short phrase`, hard-capped at 45 characters. The prefix is optional per user: a config file (`~/.claude/claude-session-namer/config.json`, default `{"prefix": true}`) controls it, toggleable via `claude-session-namer config prefix on|off` or `install --no-prefix`. With prefixes off, titles are the bare phrase. Prefixes are free-form but normalized: the prompt includes the user's previously-used prefixes with an instruction to reuse one when it fits and coin a new one only for a genuinely new workstream. Seen prefixes and counts live in state.
 
 ## CLI commands
 

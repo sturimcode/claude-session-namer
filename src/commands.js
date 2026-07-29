@@ -170,21 +170,53 @@ async function backfill(argv, testOpts = {}) {
   process.stdout.write(`${summary}${failed ? `, ${failed} failed` : ''}.\n`);
 }
 
+// Every command that acts on one session takes the same id: the full one, or any prefix of it that
+// picks out exactly one session. Acting on the wrong session is silent and hard to undo, so a short
+// id matching several is an error, not a coin flip. Reports the problem and returns null on a miss,
+// so callers just bail.
+function matchSession(id) {
+  const all = sessions();
+  const exact = all.filter((s) => s.sessionId === id);
+  const matches = exact.length ? exact : all.filter((s) => s.sessionId.startsWith(id));
+  if (!matches.length) { usage(`No session found for ${id}\n`); return null; }
+  if (matches.length > 1) {
+    usage(`Ambiguous session id ${id} - matches ${matches.length} sessions:\n${matches.map((m) => `  ${m.sessionId}\n`).join('')}`);
+    return null;
+  }
+  return matches[0];
+}
+
+// Protection is an explicit act and lives only in state - no title record is written, so an app-set
+// or tool-set title is locked exactly as it stands. Nothing about a title record itself can confer
+// protection: the desktop app writes its own auto-titles as the same `custom-title` records a human
+// rename produces, so the two are indistinguishable on disk.
+function setManual(argv, value, verb) {
+  const [id, ...rest] = argv;
+  if (!id || rest.length) return usage(`Usage: claude-session-namer ${verb} <session-id>\n`);
+  const match = matchSession(id);
+  if (!match) return;
+  const s = stateMod.load();
+  // session() creates the entry when the tool has never seen this session, so unprotecting one it
+  // doesn't know about is a no-op rather than a crash.
+  stateMod.session(s, match.sessionId).manual = value;
+  stateMod.save(s);
+  process.stdout.write(
+    value
+      ? `Protected ${match.sessionId.slice(0, 8)} - its title won't be changed\n`
+      : `Unprotected ${match.sessionId.slice(0, 8)} - it can be re-titled again\n`
+  );
+}
+
+async function protect(argv) { setManual(argv, true, 'protect'); }
+async function unprotect(argv) { setManual(argv, false, 'unprotect'); }
+
 async function rename(argv) {
   const [id, ...words] = argv;
   // A title that sanitizes down to nothing is a usage error, not an empty rename.
   const title = sanitizeTitle(words.join(' '));
   if (!id || !title) return usage('Usage: claude-session-namer rename <session-id> "title"\n');
-  const all = sessions();
-  const exact = all.filter((s) => s.sessionId === id);
-  const matches = exact.length ? exact : all.filter((s) => s.sessionId.startsWith(id));
-  if (!matches.length) return usage(`No session found for ${id}\n`);
-  // Renaming the wrong session is silent and hard to undo, so a short id that matches several
-  // sessions is an error, not a coin flip.
-  if (matches.length > 1) {
-    return usage(`Ambiguous session id ${id} - matches ${matches.length} sessions:\n${matches.map((m) => `  ${m.sessionId}\n`).join('')}`);
-  }
-  const match = matches[0];
+  const match = matchSession(id);
+  if (!match) return;
   t.appendTitleRecord(match.file, match.sessionId, title);
   const s = stateMod.load();
   stateMod.recordTitle(s, match.sessionId, title, t.countUserTurns(t.readEntries(match.file)));
@@ -229,4 +261,4 @@ async function config(argv) {
   usage('Usage: claude-session-namer config [prefix on|off]\n');
 }
 
-module.exports = { backfill, rename, list, search, sessions, config };
+module.exports = { backfill, rename, protect, unprotect, list, search, sessions, config };

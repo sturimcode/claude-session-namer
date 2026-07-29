@@ -40,6 +40,18 @@ test('buildPrompt only offers the KEEP-the-current-title rule when there is a cu
   assert.ok(without.includes('There is no current title yet - you must produce one.'));
 });
 
+// Nothing in a transcript record says whether a title is the app's own auto-title or a name the
+// user typed, so the drift check itself has to spare a title that reads like a deliberate label.
+test('buildPrompt protects deliberate personal labels, only when there is a current title', () => {
+  const RULE = "- If the current title reads like a deliberate personal label rather than a topic description (a person's name, a date, a note like 'Revisit Monday'), output exactly: KEEP";
+  for (const usePrefix of [true, false]) {
+    const withTitle = titler.buildPrompt({ currentTitle: 'Revisit Monday', prefixes: [], excerpt: 'x', usePrefix });
+    assert.ok(withTitle.includes(RULE), `missing in usePrefix=${usePrefix}`);
+    const without = titler.buildPrompt({ currentTitle: null, prefixes: [], excerpt: 'x', usePrefix });
+    assert.ok(!without.includes('deliberate personal label'), `present with no title, usePrefix=${usePrefix}`);
+  }
+});
+
 test('buildPrompt bounds the prefix length only in usePrefix mode', () => {
   const on = titler.buildPrompt({ currentTitle: null, prefixes: [], excerpt: 'x' });
   assert.ok(on.includes('- Prefix: 1-2 words naming the project or workstream'));

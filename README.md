@@ -14,7 +14,7 @@ A Stop hook fires after each of your turns. It spawns a detached background work
 
 Re-titling is growth-gated. The first title lands after your first exchange. After that, a session is re-checked when its user-turn count roughly doubles: a 100-turn session gets about 5 checks, not 100. If the current title still fits, the model answers `KEEP` and nothing is written.
 
-Titles you set by hand are never overwritten - not the ones you type in the app, not the ones you set with `rename`. The tool marks that session as yours and stops touching it. The app's own auto-titles (`ai-title` records) are treated as replaceable.
+Titles you set through `rename` or `protect` are never overwritten. Those mark the session as yours and the tool stops touching it. A title you type in the app UI is a different story: Claude Code writes its own auto-titles into the transcript the same way it writes your renames, so there is no way to tell them apart after the fact. Those are protected heuristically - the model is told to keep a title that reads like a deliberate label rather than a description of the work. Run `protect <session-id>` when you want a guarantee.
 
 ## Install
 
@@ -41,6 +41,8 @@ uninstall                            Remove the Stop hook
 backfill [--dry-run] [--model <m>]   Title existing untitled or vague sessions
          [--project <path>]
 rename <session-id> "title"          Set a title by hand and lock the session
+protect <session-id>                 Lock the title a session already has
+unprotect <session-id>               Let the tool re-title it again
 list [--project <path>]              List recent sessions with titles
 search <query>                       Find sessions by title or content
 config [prefix on|off]               Show or change settings
@@ -54,7 +56,7 @@ claude-session-namer backfill --dry-run
 
 `--dry-run` writes nothing, but it still calls the model once per eligible session, so it costs the same as the real run. `--model` defaults to `haiku`. `--project` takes either a path or the encoded directory name that `list` prints. Sessions touched in the last 10 minutes are skipped as probably still open.
 
-`rename` accepts a session-id prefix as long as it matches exactly one session.
+`rename`, `protect`, and `unprotect` accept a session-id prefix as long as it matches exactly one session. `protect` writes nothing to the transcript - it locks whatever the session is named right now, whether you set that name or Claude Code did.
 
 ## Prefixes
 
@@ -89,7 +91,9 @@ Read these before installing.
 
 **macOS and Linux.** Windows is untested - the hook installs as a `/bin/sh` wrapper.
 
-**A title you set in the app can still be overwritten if it reads as vague.** The tool tells your titles from Claude Code's own defaults by checking whether the title is just the opening of your first message - that is what the defaults are. So a name you type in the app that happens to start your first message ("SES bounces", on a session that opened with "SES bounces are up to 4%") looks like a default and is fair game. A title set with `rename` is always protected: the CLI marks the session yours and the tool stops touching it. App renames rely on the heuristic.
+**A title you type in the app can be overwritten.** Claude Code writes its own auto-generated titles into the transcript as the same record type your renames produce, and re-writes them as a session grows, so nothing in the file distinguishes the two. Re-titling those auto-titles is the point of this tool, so it cannot skip them - which means a name you typed in the app UI is protected only by heuristics: the model is told to answer `KEEP` when the current title reads like a deliberate label (a person's name, a date, "Revisit Monday") and when it already describes the conversation. That is not a guarantee. `rename` and `protect` are - both mark the session yours in the tool's own state, and the tool stops touching it until you run `unprotect`.
+
+**A re-title on a session you are still using may not stick.** While a session is open, the app periodically re-asserts its own cached title, which lands after ours and wins. The title settles once the session goes idle, and `backfill` only sweeps sessions untouched for 10 minutes for this reason.
 
 **Don't export `CLAUDE_SESSION_NAMER_WORKER` in the shell that launches Claude Code.** That variable is the recursion guard - the worker sets it on its own `claude -p` call so the resulting Stop hook doesn't spawn another worker. If it is already set in your environment, titling silently does nothing.
 

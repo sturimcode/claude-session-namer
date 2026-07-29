@@ -5,7 +5,7 @@ const titler = require('./titler');
 
 // Decides whether this session needs a title, asks for one, and writes it.
 // Returns { action, title? } - action is one of:
-//   no-turns | manual-skip | no-check-needed | kept | titled | dry-run
+//   no-turns | manual-skip | no-check-needed | kept | titled | dry-run | title-changed
 function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
@@ -19,14 +19,11 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   const title = info.title;
   const vague = t.isVagueTitle(title, t.firstUserText(entries));
 
-  // A custom-title we didn't write, that isn't vague, is a human's - hands off from now on.
-  // ai-title records are the app's own auto-titles, so they never mark a session manual;
-  // a non-vague ai-title is simply the current title, subject to drift re-titling below.
-  if (info.source === 'custom' && !vague && !sess.written.includes(title)) {
-    sess.manual = true;
-    if (!dryRun) stateMod.save(s);
-    return { action: 'manual-skip' };
-  }
+  // A title we didn't write gets no special standing, whatever record type carries it. The desktop
+  // app files its own auto-titles as custom-title records - the same type a rename produces - and
+  // re-asserts them every few turns, so record source cannot tell a human's name from the app's.
+  // Every non-vague title is simply the current title, subject to the drift flow below; permanent
+  // protection comes only from `rename` or `protect` setting the manual flag above.
 
   // A transcript that shrank is not the one we measured against (rewrite, compaction,
   // truncation) - drop the stale baseline so an untitled session is treated as fresh.
@@ -44,8 +41,9 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   const needsFirst = vague && sess.lastCheckTurns === 0 && grew;
   const needsRecheck = sess.lastCheckTurns > 0 && turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4 && grew;
   if (!needsFirst && !needsRecheck) {
-    // Sessions that arrived already titled (eg by an ai-title) have no baseline yet - set one
-    // here so drift tracking measures growth from now, not from turn zero. A still-vague
+    // Sessions that arrived already titled (by the app's own title record, usually) have no
+    // baseline yet - set one here so drift tracking measures growth from now, not from turn
+    // zero. A still-vague
     // session gets no baseline: lastTryTurns is its tracker, and a baseline here would gate
     // out every later attempt and strand the session untitled.
     if (!vague && sess.lastCheckTurns === 0) { sess.lastCheckTurns = turns; if (!dryRun) stateMod.save(s); }
@@ -70,8 +68,9 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
 
   // generateTitle just blocked for up to 90 seconds on `claude -p`. Anything the copy loaded before
   // that call knows about state is stale: a worker for another session that finished inside the
-  // window has saved its own copy since, and writing ours over it would erase that session's
-  // `written` claim - which makes its title read as a human's and marks it manual, permanently.
+  // window has saved its own copy since, and writing ours over it would erase that session's drift
+  // baseline, its `written` claim, and - worst of all - a manual flag a `rename` or `protect` set
+  // inside the window, unprotecting a session the user had just locked.
   // Re-load and re-apply every mutation against fresh state, so the window is milliseconds wide.
   const fresh = stateMod.load();
   const freshSess = stateMod.session(fresh, sessionId);
@@ -97,18 +96,19 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
   const freshEntries = t.readEntries(transcriptPath);
   const freshInfo = t.titleInfo(freshEntries);
   const startedWith = info.source === 'custom' ? info.title : null;
-  // Same test as the pre-generate one - a custom-title that is ours, or vague, is not a human's -
-  // narrowed to titles that weren't there on the first read, so the vague title a session started
-  // with doesn't read as a rename that just happened.
+  // A custom-title that wasn't there on the first read appeared while we were blocked. Drop the
+  // title we asked for rather than append after it - if a user typed that name seconds ago, ours
+  // would take it straight back off them. Nothing is marked or recorded: the new title may just as
+  // easily be the app re-asserting its own auto-title, so the next Stop event judges it afresh
+  // through the normal flow. Titles that are ours, or vague, or already present on the first read
+  // are not new arrivals and don't trigger this.
   if (
     freshInfo.source === 'custom'
     && freshInfo.title !== startedWith
     && !freshSess.written.includes(freshInfo.title)
     && !t.isVagueTitle(freshInfo.title, t.firstUserText(freshEntries))
   ) {
-    freshSess.manual = true;
-    stateMod.save(fresh);
-    return { action: 'manual-skip' };
+    return { action: 'title-changed' };
   }
 
   // Claim the title in state BEFORE it can appear in the transcript: a crash between the two

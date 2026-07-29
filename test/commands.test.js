@@ -165,6 +165,81 @@ test('rename rejects a title that sanitizes down to nothing', async () => {
   assert.equal(t.currentTitle(t.readEntries(file)), null);
 });
 
+// `protect` is the guarantee: it locks a title the app or the tool already wrote, without touching
+// the transcript. Nothing about the title record itself confers protection any more.
+test('protect locks a session against re-titling without writing a title record', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const entries = [];
+  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about ses bounces`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
+  const file = fx.writeTranscript(projectDir, id, [...entries, fx.titleEntry('Revisit Monday', id)]);
+  const t = require('../src/transcript');
+  const before = t.readEntries(file).length;
+
+  const out = await capture(() => commands.protect([id]));
+  assert.match(out, /aaa11111/);
+  const state = require('../src/state');
+  assert.equal(state.load().sessions[id].manual, true);
+  assert.equal(t.readEntries(file).length, before, 'protect must not append a title record');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Revisit Monday');
+
+  // and the worker leaves it alone from here on
+  const { processSession } = require('../src/worker');
+  assert.equal(processSession({ sessionId: id, transcriptPath: file, runner: () => '[X] Nope' }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Revisit Monday');
+});
+
+test('unprotect puts a session back in the tool\'s hands', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const entries = [];
+  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about ses bounces`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
+  const file = fx.writeTranscript(projectDir, id, entries);
+  await capture(() => commands.protect([id]));
+  const out = await capture(() => commands.unprotect([id]));
+  assert.match(out, /aaa11111/);
+  const state = require('../src/state');
+  assert.equal(state.load().sessions[id].manual, false);
+  const { processSession } = require('../src/worker');
+  assert.equal(processSession({ sessionId: id, transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+});
+
+// A session the tool has never seen has no state entry - unprotecting it is a no-op, not a crash.
+test('unprotect on a session with no state entry creates it unprotected', async () => {
+  const { commands, projectDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  fx.writeTranscript(projectDir, id, [fx.userEntry('x')]);
+  const { err, code } = await exitCodeOf(() => commands.unprotect([id]));
+  assert.equal(err, '');
+  assert.equal(code, undefined);
+  const state = require('../src/state');
+  assert.equal(state.load().sessions[id].manual, false);
+});
+
+test('protect and unprotect refuse an ambiguous short id and report an unknown one', async () => {
+  const { commands, projectDir } = fresh();
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x')]);
+  fx.writeTranscript(projectDir, 'aaa22222-2222-2222-2222-222222222222', [fx.userEntry('y')]);
+  const state = require('../src/state');
+  for (const cmd of ['protect', 'unprotect']) {
+    const ambiguous = await exitCodeOf(() => commands[cmd](['aaa']));
+    assert.match(ambiguous.err, /ambiguous session id/i, cmd);
+    assert.equal(ambiguous.code, 1);
+
+    const missing = await exitCodeOf(() => commands[cmd](['zzz']));
+    assert.match(missing.err, /No session found/i, cmd);
+    assert.equal(missing.code, 1);
+
+    const noId = await exitCodeOf(() => commands[cmd]([]));
+    assert.match(noId.err, /Usage/i, cmd);
+    assert.equal(noId.code, 1);
+
+    assert.deepEqual(state.load().sessions, {}, `${cmd} wrote state on a usage error`);
+  }
+});
+
 test('list prints titles, search filters', async () => {
   const { commands, projectDir } = fresh();
   fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about ses bounces'), fx.titleEntry('[Emails] SES fix')]);

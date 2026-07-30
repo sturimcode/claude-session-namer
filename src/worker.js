@@ -3,6 +3,7 @@ const t = require('./transcript');
 const stateMod = require('./state');
 const titler = require('./titler');
 const appstore = require('./appstore');
+const paths = require('./paths');
 
 // The second growth trigger, for sessions the user-turn count cannot see: a heavily agentic session
 // spends hundreds of records on two or three prompts, so its turn count barely moves while the work
@@ -134,9 +135,15 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // opens again and no sweep could converge it. The bypass is scoped to this gate alone - forcing the
   // drift recheck would re-derive meaning on every session in a sweep, at a model call each.
   const config = stateMod.loadConfig();
+  // Which project the session belongs to, read off the transcript's own directory. With prefixes on
+  // that is part of the format contract rather than a hint: a session belonging to no project has
+  // nothing for a prefix to name, so a bare title there conforms and is left alone. Without it the
+  // contract forced a prefix onto every such session and the only prefixes on offer were other
+  // work's - '[Domestique] Cat house comparison', observed in the field.
+  const project = paths.projectSignal(transcriptPath);
   const needsRestyle = !vague
     && Boolean(title)
-    && !titler.matchesFormat(title, config.prefix)
+    && !titler.matchesFormat(title, config.prefix, project.inProject)
     && (force || sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2 || recordsGrew);
 
   if (!needsFirst && !needsRecheck && !needsRestyle) {
@@ -155,12 +162,15 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
 
   // The model is handed the core, never the marked string: a prompt that carried the marker could
   // have it edited, echoed, or dropped, and the marker is not the model's to decide.
+  // The prefix list is ranked against this session's own directory, and the prompt drops it entirely
+  // for a session that belongs to none - see buildPrompt.
   const generated = titler.generateTitle({
     currentTitle: vague ? null : core,
-    prefixes: stateMod.topPrefixes(s),
+    prefixes: stateMod.prefixEntries(s, 15, project.dir),
     excerpt: t.buildExcerpt(entries),
     usePrefix: config.prefix,
     restyle: needsRestyle,
+    project,
     model: model || config.model,
     runner,
   });
@@ -268,8 +278,9 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // is the pre-append one either way.
   if (Number.isInteger(freshSess.doneCheckedRecords)) freshSess.doneCheckedRecords += 1;
   // Recorded against the core: it is the string the prefix accounting is about, and a marked title
-  // would read as having no prefix at all.
-  stateMod.recordTitle(fresh, sessionId, generated, turns, records);
+  // would read as having no prefix at all. The project dir goes with it, so the next prompt can say
+  // where a prefix is used and rank this session's own work first.
+  stateMod.recordTitle(fresh, sessionId, generated, turns, records, project.dir);
   stateMod.save(fresh);
   return { action: needsRestyle ? 'restyled' : 'titled', title: finalTitle };
 }

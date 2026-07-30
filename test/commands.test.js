@@ -639,6 +639,25 @@ test('backfill converges a titled session left out of format by a setting change
   assert.ok(second.includes('0 session(s) titled, 1 skipped.'), second);
 });
 
+// The sweep is the path that reaches finished sessions - it forces the reformat gate open - so it is
+// also the path that would have gone through a user's history putting borrowed prefixes on sessions
+// that belong to no project. A bare title there is conforming, and the sweep spends nothing on it.
+test('backfill leaves a bare title on a session outside any project alone', async () => {
+  const { commands, configDir } = fresh();
+  const dir = fx.homeSessionDir(configDir);
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(dir, id, [
+    fx.userEntry('which cat house should i buy'),
+    fx.assistantEntry('depends on the cat'),
+    fx.titleEntry('Cat house comparison', id),
+  ]);
+  age(file, HOUR);
+  const out = await capture(() => commands.backfill([], { runner: () => { throw new Error('must not call the model'); } }));
+  assert.ok(out.includes('0 session(s) titled, 1 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Cat house comparison');
+});
+
 // Backfill counts anything that isn't a title it wrote as skipped, so the app-rename protection
 // carries over to the sweep without backfill knowing the action exists.
 test('backfill leaves a session renamed in the desktop app alone', async () => {

@@ -45,21 +45,63 @@ function session(s, id) {
   return s.sessions[id];
 }
 
+// A prefix entry used to be a bare count, and a count is all a ranked list needs - which is how a
+// prefix borrowed onto an unrelated session climbed the list and caught more strays. The entry now
+// also carries `dir`, the encoded project dir the prefix was last used in, and `sample`, the most
+// recent title carrying it, so a prompt can show the model enough to reject a bad fit.
+// Numbers written by every earlier version stay valid forever: one reads as a count with nothing
+// else known about it, and the next write upgrades the entry in place. Anything else - a string, a
+// null, a hand-edited array - says nothing and reads as no entry at all.
+function prefixInfo(name, value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? { name, count: value } : null;
+  }
+  if (!isPlainObject(value)) return null;
+  const out = { name, count: Number.isFinite(value.count) && value.count > 0 ? value.count : 1 };
+  if (typeof value.dir === 'string' && value.dir) out.dir = value.dir;
+  if (typeof value.sample === 'string' && value.sample) out.sample = value.sample;
+  return out;
+}
+
 // The written list is a set, not a log - the worker claims a title here before writing it to the
 // transcript, and re-titling with the same string must not grow the list without bound.
 // `records` is the transcript's record count at the same moment, the second half of the growth
 // baseline. It is optional: a caller that isn't measuring growth (a hand `rename`, which locks the
 // session anyway) leaves the marker as it found it rather than writing a count it didn't take.
-function recordTitle(s, id, title, turns, records) {
+// `dir` is the encoded project dir the title was written in, and is optional for the same reason:
+// a caller that doesn't know where it is leaves the dir the entry already carried rather than
+// erasing it - a `rename` says nothing about where a prefix belongs, and neither does a session
+// that belongs to no project.
+function recordTitle(s, id, title, turns, records, dir) {
   const sess = session(s, id);
   if (!sess.written.includes(title)) sess.written.push(title);
   sess.lastCheckTurns = turns;
   if (records !== undefined) sess.lastCheckRecords = records;
   const m = title.match(/^\[([^\]]+)\]/);
-  if (m) s.prefixes[m[1]] = (s.prefixes[m[1]] || 0) + 1;
+  if (!m) return;
+  const name = m[1];
+  const prev = prefixInfo(name, s.prefixes[name]);
+  const entry = { count: (prev ? prev.count : 0) + 1 };
+  const keptDir = dir || (prev && prev.dir);
+  if (keptDir) entry.dir = keptDir;
+  entry.sample = title;
+  s.prefixes[name] = entry;
 }
 
-const topPrefixes = (s, n = 15) => Object.entries(s.prefixes).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k);
+// The prefix list a prompt is built from, ranked. A prefix already used in this session's own
+// directory comes first however small its count: raw frequency is what let a borrowed prefix
+// outrank the session's own work, and the directory is the one fact that says which prefix this
+// conversation probably is.
+function prefixEntries(s, n = 15, dir) {
+  return Object.entries(s.prefixes)
+    .map(([name, value]) => prefixInfo(name, value))
+    .filter(Boolean)
+    .sort((a, b) => (Number(Boolean(dir) && b.dir === dir) - Number(Boolean(dir) && a.dir === dir)) || (b.count - a.count))
+    .slice(0, n);
+}
+
+// Names only, which is what every caller outside the prompt wants.
+const topPrefixes = (s, n = 15, dir) => prefixEntries(s, n, dir).map((e) => e.name);
 
 // Unknown keys are carried through rather than dropped: callers save with
 // saveConfig({ ...loadConfig(), <field> }), so anything this function discards is anything a
@@ -86,4 +128,4 @@ function saveConfig(c) {
   fs.renameSync(tmp, paths.configFile());
 }
 
-module.exports = { load, save, session, recordTitle, topPrefixes, loadConfig, saveConfig, MODELS };
+module.exports = { load, save, session, recordTitle, topPrefixes, prefixEntries, loadConfig, saveConfig, MODELS };

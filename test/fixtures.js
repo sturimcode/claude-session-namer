@@ -33,6 +33,20 @@ function fakeConfig() {
   return { configDir, projectDir };
 }
 
+// How Claude Code encodes a session's cwd into a project dir name: every non-alphanumeric character
+// becomes a dash. Duplicated here rather than imported, so a test would catch the encoding changing
+// under it instead of following it.
+const encodePath = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
+
+// The project dir for sessions that belong to no project - a session run from the home directory
+// itself. Derived from the real home rather than hardcoded, because the real home is what the
+// classifier compares against.
+function homeSessionDir(configDir) {
+  const dir = path.join(configDir, 'projects', encodePath(os.homedir()));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 // Writes one session file into an existing store root, nested the two directory levels deep the app
 // nests them. `spec` is 'user' | 'auto' | null - null omits titleSource entirely, the shape older
 // app builds left behind - or an object overriding any of { titleSource, title, sessionId }.
@@ -61,4 +75,4 @@ function fakeAppStore(entries = {}) {
   return root;
 }
 
-module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig, fakeAppStore, appStoreRecord };
+module.exports = { tmpDir, userEntry, assistantEntry, toolResultEntry, titleEntry, aiTitleEntry, writeTranscript, fakeConfig, homeSessionDir, encodePath, fakeAppStore, appStoreRecord };

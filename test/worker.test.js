@@ -10,7 +10,7 @@ function setup(appStore = {}) {
   process.env.CLAUDE_CONFIG_DIR = configDir;
   process.env.CLAUDE_SESSION_NAMER_APP_STORE = fx.fakeAppStore(appStore);
   for (const m of ['../src/paths', '../src/state', '../src/appstore', '../src/worker']) delete require.cache[require.resolve(m)];
-  return { worker: require('../src/worker'), state: require('../src/state'), projectDir };
+  return { worker: require('../src/worker'), state: require('../src/state'), projectDir, configDir };
 }
 
 const chat = (n) => {
@@ -302,7 +302,11 @@ test('a concurrent state write during generation is not lost', () => {
   assert.equal(after.sessions.s1.lastCheckTurns, 2);
   assert.deepEqual(after.sessions.s2.written, ['[Other] Concurrent work']);
   assert.equal(after.sessions.s2.lastCheckTurns, 4);
-  assert.deepEqual(after.prefixes, { Emails: 1, Other: 1 });
+  // A prefix entry carries where the prefix was used as well as how often, so the counts are read
+  // off the entries rather than the map being compared whole.
+  assert.deepEqual(Object.keys(after.prefixes).sort(), ['Emails', 'Other']);
+  assert.equal(after.prefixes.Emails.count, 1);
+  assert.equal(after.prefixes.Other.count, 1);
 });
 
 test('a concurrent state write during a generation that ends in KEEP is not lost', () => {
@@ -527,7 +531,9 @@ test('prefix on: an accurate title with no prefix is restyled rather than left a
   assert.deepEqual(after.sessions.s1.written, ['[API] Rate limiter fix']);
   assert.equal(after.sessions.s1.lastCheckTurns, 2);
   assert.equal(after.sessions.s1.manual, false);
-  assert.deepEqual(after.prefixes, { API: 1 });
+  // The entry says where the prefix was coined - the encoded project dir this session ran in - and
+  // carries a title using it, which is what the next prompt shows the model.
+  assert.deepEqual(after.prefixes, { API: { count: 1, dir: '-Users-test', sample: '[API] Rate limiter fix' } });
 });
 
 test('a title already in the configured format costs no model call', () => {
@@ -1198,4 +1204,79 @@ test('the worker refuses a transcript of one of its own title and done calls', (
     const res = worker.processSession({ sessionId: id, transcriptPath: file, runner: () => { throw new Error('should not be called'); } });
     assert.equal(res.action, 'own-prompt-skip');
   }
+});
+
+// --- the session that belongs to no project ------------------------------------------------------
+
+// The field report: a session run from the home directory, about a cat house, was titled
+// "[Domestique] Cat house comparison" - Domestique being a website project it had nothing to do
+// with. The prefix was mandatory and the reuse list was right there, so borrowing was the only move
+// the model had. The transcript's own directory is what says the session belongs to no project.
+test('prefixes on, no project: the title call is never offered a prefix to borrow', () => {
+  const { worker, state, configDir } = setup();
+  const dir = fx.homeSessionDir(configDir);
+  const s = state.load();
+  state.recordTitle(s, 'other', '[Domestique] Contact form copy', 4, 40, '-Users-x-projects-domestique');
+  state.save(s);
+
+  const file = fx.writeTranscript(dir, 's1', chat(2));
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return 'Cat house comparison'; },
+  });
+  assert.equal(res.action, 'titled');
+  assert.ok(!prompt.includes('Domestique'), prompt);
+  assert.ok(!prompt.includes('Previously used prefixes'), prompt);
+  assert.ok(prompt.includes('never borrow a prefix from other work'), prompt);
+  // and the bare title it produced is written as it stands
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Cat house comparison');
+});
+
+// The conformance half. A bare title on a session that belongs to nowhere is already right, so
+// nothing may spend a model call reshaping it into a prefix it could only borrow - not on the hook
+// path, and not on the forced sweep path either, which is the one that reaches finished sessions.
+test('prefixes on, no project: a bare title conforms and is never restyled', () => {
+  const { worker, configDir } = setup();
+  const dir = fx.homeSessionDir(configDir);
+  const file = fx.writeTranscript(dir, 's1', [...chat(2), fx.titleEntry('Cat house comparison')]);
+  const mustNotCall = () => { throw new Error('a bare title outside a project is already conforming'); };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: mustNotCall }).action, 'no-check-needed');
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, force: true, runner: mustNotCall }).action, 'no-check-needed');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Cat house comparison', 'left exactly as found');
+});
+
+// The surviving contract, pinned beside the change: inside a project a bare title is still the
+// non-conforming one, and still gets reformatted.
+test('prefixes on, in a project: a bare title still restyles', () => {
+  const { worker, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Cat house comparison')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[API] Cat house comparison' });
+  assert.equal(res.action, 'restyled');
+});
+
+// Prefixes off is a contract about brackets and nothing else - where the session ran has no bearing
+// on it, so a prefixed title outside a project is reformatted exactly as one inside a project is.
+test('prefixes off: the no-project arm changes nothing', () => {
+  const { worker, state, configDir } = setup();
+  state.saveConfig({ prefix: false });
+  const dir = fx.homeSessionDir(configDir);
+  const file = fx.writeTranscript(dir, 's1', [...chat(2), fx.titleEntry('[Domestique] Cat house comparison')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'Cat house comparison' });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, 'Cat house comparison');
+});
+
+// A prefix the model coined out of the conversation itself is allowed outside a project - the rule
+// is against borrowing, not against prefixes - and the entry it records knows it has no directory.
+test('prefixes on, no project: a coined prefix is accepted and recorded without a directory', () => {
+  const { worker, state, configDir } = setup();
+  const dir = fx.homeSessionDir(configDir);
+  const file = fx.writeTranscript(dir, 's1', chat(2));
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Taxes] Quarterly filing questions' });
+  assert.equal(res.action, 'titled');
+  assert.deepEqual(state.load().prefixes.Taxes, { count: 1, sample: '[Taxes] Quarterly filing questions' });
 });

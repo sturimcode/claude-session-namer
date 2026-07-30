@@ -96,8 +96,75 @@ test('recordTitle tracks written titles and prefix counts', () => {
   state.recordTitle(s, 'ghi', '[CSA] Defaults audit', 1);
   assert.deepEqual(s.sessions.abc.written, ['[Emails] SES bounce fix']);
   assert.equal(s.sessions.abc.lastCheckTurns, 5);
-  assert.equal(s.prefixes['Emails'], 2);
+  // A prefix entry is an object now - the count plus where the prefix is used - so the count is read
+  // off the entry rather than being the entry. A number written by an earlier version still reads;
+  // see the migration test below.
+  assert.equal(s.prefixes['Emails'].count, 2);
   assert.deepEqual(state.topPrefixes(s, 1), ['Emails']);
+});
+
+// A prefix used to be a bare count, which said nothing about whether it belonged to the session in
+// front of it. It now carries the project dir it was last used in and a title that carries it, so a
+// prompt can show the model enough to reject a bad fit.
+test('recordTitle records where a prefix is used and a sample title carrying it', () => {
+  const state = freshState();
+  const s = state.load();
+  state.recordTitle(s, 'abc', '[API] Rate limiter fix', 5, 120, '-Users-x-projects-api');
+  assert.deepEqual(s.prefixes.API, { count: 1, dir: '-Users-x-projects-api', sample: '[API] Rate limiter fix' });
+  state.recordTitle(s, 'def', '[API] Retry backoff', 2, 40, '-Users-x-projects-api');
+  assert.deepEqual(s.prefixes.API, { count: 2, dir: '-Users-x-projects-api', sample: '[API] Retry backoff' });
+});
+
+// State files written before the entry grew are valid forever - a number reads as a count with
+// nothing else known about it, and the next write upgrades it in place rather than starting over.
+test('a numeric prefix entry still reads, and upgrades on the next write', () => {
+  const state = freshState();
+  const s = state.load();
+  s.prefixes = { Legacy: 3 };
+  state.save(s);
+  const loaded = state.load();
+  assert.deepEqual(state.topPrefixes(loaded), ['Legacy']);
+  assert.deepEqual(state.prefixEntries(loaded), [{ name: 'Legacy', count: 3 }]);
+
+  state.recordTitle(loaded, 'abc', '[Legacy] Old billing path', 4, 90, '-Users-x-projects-billing');
+  assert.deepEqual(loaded.prefixes.Legacy, { count: 4, dir: '-Users-x-projects-billing', sample: '[Legacy] Old billing path' });
+});
+
+// A rename takes no project dir - it is not measuring anything - so a write that doesn't know where
+// it is must not erase what the last one did know.
+test('a write with no project dir keeps the dir the entry already had', () => {
+  const state = freshState();
+  const s = state.load();
+  state.recordTitle(s, 'abc', '[API] Rate limiter fix', 5, 120, '-Users-x-projects-api');
+  state.recordTitle(s, 'def', '[API] Retry backoff', 2);
+  assert.equal(s.prefixes.API.dir, '-Users-x-projects-api');
+  assert.equal(s.prefixes.API.sample, '[API] Retry backoff');
+});
+
+// Raw count ordering is what let a borrowed prefix climb: the more strays it caught, the higher it
+// ranked. A prefix already used in this session's own directory outranks a bigger one from
+// somebody else's work.
+test('prefixEntries ranks this session own directory first, then by count', () => {
+  const state = freshState();
+  const s = state.load();
+  s.prefixes = {
+    Domestique: { count: 9, dir: '-Users-x-projects-domestique', sample: '[Domestique] Contact form' },
+    API: { count: 2, dir: '-Users-x-projects-api', sample: '[API] Rate limiter fix' },
+    Emails: 5,
+  };
+  assert.deepEqual(state.prefixEntries(s, 15, '-Users-x-projects-api').map((e) => e.name), ['API', 'Domestique', 'Emails']);
+  // with no directory to match on, the ranking is the count ordering it always was
+  assert.deepEqual(state.prefixEntries(s).map((e) => e.name), ['Domestique', 'Emails', 'API']);
+  assert.deepEqual(state.topPrefixes(s, 2), ['Domestique', 'Emails']);
+});
+
+// Every prefix entry is a line of a file a user can hand-edit, so a wrong-shaped one reads as
+// nothing rather than reaching a prompt as an object.
+test('prefixEntries drops entries whose shape says nothing', () => {
+  const state = freshState();
+  const s = state.load();
+  s.prefixes = { Good: 2, Zero: 0, Nope: 'yes', Null: null, Listy: ['x'], Partial: { count: 3 } };
+  assert.deepEqual(state.prefixEntries(s).map((e) => e.name), ['Partial', 'Good']);
 });
 
 test('recordTitle does not re-push a title already claimed', () => {
@@ -107,7 +174,7 @@ test('recordTitle does not re-push a title already claimed', () => {
   state.recordTitle(s, 'abc', '[Emails] SES bounce fix', 5);
   assert.deepEqual(s.sessions.abc.written, ['[Emails] SES bounce fix']);
   assert.equal(s.sessions.abc.lastCheckTurns, 5);
-  assert.equal(s.prefixes['Emails'], 1);
+  assert.equal(s.prefixes['Emails'].count, 1);
 });
 
 test('session() leaves lazily added fields intact across a save/load', () => {

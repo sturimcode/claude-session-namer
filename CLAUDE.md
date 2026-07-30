@@ -5,7 +5,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 ## Architecture
 
 - `bin/cli.js` - command dispatch, thin
-- `src/paths.js` - every filesystem location; `CLAUDE_CONFIG_DIR` and `CLAUDE_SESSION_NAMER_APP_STORE` env overrides make all tests hermetic
+- `src/paths.js` - every filesystem location; `CLAUDE_CONFIG_DIR` and `CLAUDE_SESSION_NAMER_APP_STORE` env overrides make all tests hermetic. Also `projectSignal`, which reads a transcript path's encoded project dir to say which project (or none) a session belongs to - a pure string read, no fs walk, no app store
 - `src/transcript.js` - session JSONL parsing, title records, vague-title detection, excerpt builder, append (single-write, newline-guarded)
 - `src/state.js` - `state.json` + `config.json`, atomic pid-scoped tmp+rename writes
 - `src/titler.js` - prompt construction (drift + restyle modes), `claude -p` invocation, response parsing, `matchesFormat`
@@ -32,7 +32,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 - `--dry-run` writes nothing, anywhere. The app store is never written, only read. `settings.json` surgery must round-trip unrelated keys byte-faithfully and abort (tagged `err.expected`) rather than guess on malformed shapes.
 - The desktop app's scheduled-task registry is app-private, like its session store: we supply the instructions that create the sidebar-sync routine and the app writes it. Never write `~/.claude/scheduled-tasks/` - the schedule and the approved tool permissions live with the app, and a task it did not create carries neither.
 - Manual protection: `rename`/`protect` state flag and app `titleSource: 'user'` are hard skips; both are re-checked on fresh state after the (up to 90s) model call before any write.
-- The prefix config is a format contract both ways - see design.md 'Title format'.
+- The prefix config is a format contract both ways - see design.md 'Title format'. One exception, and it is load-bearing: with prefixes on, a session whose transcript sits under the encoded home (or tmp) dir belongs to no project, so a bare title conforms, never restyles, and its prompt carries no reuse list at all. A prefix the model never sees cannot be borrowed onto unrelated work.
 - The done marker (`✓ `) is a prefix on a title, never part of one: strip it before every prompt and every format check, re-apply it after, and put both strings in `written` so displacement, echo recognition, and sync-plan keep matching. Only `sweep-done` applies it; only the worker's resume path removes it, mechanically. See design.md 'Done marker'.
 - The version string lives in three files (package.json and both plugin manifests) and the Stop hook timeout in two (`src/settings.js` and `hooks/hooks.json`). `test/plugin.test.js` fails when any of them drift apart.
 

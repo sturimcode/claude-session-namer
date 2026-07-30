@@ -1,5 +1,6 @@
 const { spawnSync } = require('node:child_process');
 const os = require('node:os');
+const paths = require('./paths');
 
 const MAX_TITLE_CHARS = 45;
 // Only cut on a word boundary if the boundary is reasonably deep into the title -
@@ -20,6 +21,14 @@ const BARE_PHRASE_EXAMPLES = [
   'Cascade validation rules',
   'KEEP',
 ];
+// Prefixes are on, but this session belongs to no project, so both shapes are allowed. The bare one
+// leads because it is the answer whenever nothing in the conversation names a workstream of its own,
+// and the prefixed one is there to show that a prefix coined out of this conversation is still fine.
+const NO_PROJECT_EXAMPLES = [
+  'Laptop battery replacement',
+  '[Taxes] Quarterly filing questions',
+  'KEEP',
+];
 
 // The prefix setting is a format contract, so a title has to be checkable against it. In prefix mode
 // that means a bracketed prefix with a phrase after it; in bare mode, a title that doesn't open with
@@ -38,14 +47,24 @@ const isMarked = (title) => typeof title === 'string' && title.startsWith(DONE_M
 const stripMarker = (title) => (isMarked(title) ? title.slice(DONE_MARKER.length) : title);
 const markTitle = (core) => (isMarked(core) ? core : DONE_MARKER + String(core == null ? '' : core));
 
-function matchesFormat(title, usePrefix) {
+// `inProject` is the project signal read off the transcript's own directory (paths.projectSignal).
+// It defaults to true, so a caller that cannot classify a path gets exactly the behavior this check
+// always had.
+function matchesFormat(title, usePrefix, inProject = true) {
   // A marked title conforms exactly when its core does. The 45-character cap is a cap on that core,
   // so a marked title runs two characters longer and is no less conforming for it.
   const s = typeof title === 'string' ? stripMarker(title) : '';
   // An empty title conforms to nothing - a session with no name is the first-title path's problem,
   // not a reformat.
   if (!s) return false;
-  return usePrefix ? PREFIX_FORM.test(s) : !OPENS_WITH_BRACKET.test(s);
+  if (!usePrefix) return !OPENS_WITH_BRACKET.test(s);
+  // With prefixes on, a session that belongs to no project directory conforms either way. There is
+  // no project for a prefix to name, so calling a bare title non-conforming would send it to a
+  // restyle whose only possible answer is a prefix borrowed from unrelated work - the field failure
+  // this arm exists to stop. A prefix the model coined out of the conversation is fine too; what is
+  // ruled out is spending a call to acquire one.
+  if (inProject === false) return PREFIX_FORM.test(s) || !OPENS_WITH_BRACKET.test(s);
+  return PREFIX_FORM.test(s);
 }
 
 // The cap a title crossing into a prompt is held to: the format cap plus the two characters the done
@@ -69,27 +88,73 @@ const sanitizeForPrompt = (title) => {
     .trim();
 };
 
-function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = true, restyle = false }) {
+// How much of the prompt the reuse list is allowed to be. Fifteen annotated prefixes would crowd out
+// the conversation the title is supposed to come from, so entries are taken in rank order until the
+// line is full and the rest are dropped.
+const PREFIX_LINE_MAX = 600;
+
+// One prefix, rendered for the reuse line: the name, where it is used, and a title carrying it.
+// The annotation is what lets the model turn a prefix down - a bare name says nothing about whether
+// it belongs to the conversation in front of it. Every piece came off a title record or the state
+// file, both of which other tools write, so every piece crosses the same prompt boundary.
+function renderPrefix(entry) {
+  const name = sanitizeForPrompt(entry.name);
+  if (!name) return '';
+  const hint = entry.dir ? sanitizeForPrompt(paths.dirHint(entry.dir)) : '';
+  const sample = sanitizeForPrompt(entry.sample);
+  const notes = [hint && `from ${hint}`, sample && `e.g. "${sample}"`].filter(Boolean);
+  return notes.length ? `${name} (${notes.join('; ')})` : name;
+}
+
+function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = true, restyle = false, project = null }) {
   // A title that sanitizes down to nothing has no meaning left to preserve, so every rule below
   // reads it as no title at all rather than as an empty one.
   const safeTitle = sanitizeForPrompt(currentTitle);
+  // The session belongs to no project directory - see paths.projectSignal. A null signal is a
+  // caller that could not classify the path, and reads as the ordinary project case: dropping the
+  // reuse list on an unknown signal would lose prefix reuse everywhere the classifier ever fails.
+  const noProject = usePrefix && Boolean(project) && project.inProject === false;
+  // Entries may arrive as bare names (an older caller, or a test) or as the annotated shape state
+  // keeps now. Both render.
+  const entries = prefixes.map((p) => (typeof p === 'string' ? { name: p } : p)).filter(Boolean);
   const header = [`Current title: ${safeTitle || '(none)'}`];
-  if (usePrefix) {
-    // Prefixes are parsed back out of titles, so the same untrusted text can arrive this way.
-    const safePrefixes = prefixes.map(sanitizeForPrompt).filter(Boolean);
+  // A session with no project gets no reuse list at all. Re-wording the instruction was the obvious
+  // fix and the wrong one: the prefix that was borrowed in the field ('[Domestique] Cat house
+  // comparison') was borrowed because it was in front of the model ranked by how often it had been
+  // used. A name the model never sees cannot be borrowed.
+  if (usePrefix && !noProject) {
+    let line = '';
+    for (const rendered of entries.map(renderPrefix).filter(Boolean)) {
+      const next = line ? `${line}, ${rendered}` : rendered;
+      if (next.length > PREFIX_LINE_MAX) break;
+      line = next;
+    }
     header.push(
-      `Previously used prefixes (reuse one when it fits; coin a new one only for a genuinely different workstream): ${safePrefixes.length ? safePrefixes.join(', ') : '(none yet)'}`
+      `Previously used prefixes (reuse one when it fits; coin a new one only for a genuinely different workstream): ${line || '(none yet)'}`
     );
   }
 
-  const rules = [
-    usePrefix ? '- Output format: [Prefix] Short phrase' : '- Output format: Short phrase (no prefix, no brackets)',
-  ];
+  const rules = [];
+  if (!usePrefix) rules.push('- Output format: Short phrase (no prefix, no brackets)');
+  else if (noProject) rules.push('- Output format: [Prefix] Short phrase, or Short phrase with no prefix');
+  else rules.push('- Output format: [Prefix] Short phrase');
   // The character bound is the same one matchesFormat holds a title to. Stating it here is what keeps
   // the two ends in step - a prefix longer than that reads as a whole title parked in brackets, and
   // asking for one the tool would then call non-conforming starts a reformat over a fine answer.
   if (usePrefix) rules.push('- Prefix: 1-2 words naming the project or workstream, at most 25 characters');
   rules.push('- Max 45 characters total, sentence case phrase, no quotes, no trailing period');
+
+  if (noProject) {
+    // The escape the format contract was missing. A session run from the home directory can be about
+    // anything, and with a prefix mandatory the only prefix available is one from other work.
+    rules.push('- This session belongs to no project directory - never borrow a prefix from other work');
+    rules.push('- If no prefix comes out of this conversation itself, output the phrase with no prefix - a bare title beats a wrong prefix');
+  } else if (usePrefix && project && project.hint && entries.some((e) => e.dir && e.dir === project.dir)) {
+    // The other half of the ranking: this session's directory already has a prefix, so say so. It is
+    // one line and only when there is something to prefer - a rule naming a directory nothing has
+    // been titled under yet would just be noise.
+    rules.push(`- This session ran in ${sanitizeForPrompt(project.hint)} - prefer the prefix already established there unless the conversation clearly is not that work`);
+  }
 
   // Restyle is not a re-title. The title already says what the session is about - it just isn't in
   // the shape the user asked for - so the phrase's meaning survives and only the format changes.
@@ -120,7 +185,8 @@ function buildPrompt({ currentTitle, prefixes = [], excerpt = '', usePrefix = tr
   }
 
   // KEEP can't stand as an example of an answer restyle mode has just forbidden.
-  const examples = (usePrefix ? USE_PREFIX_EXAMPLES : BARE_PHRASE_EXAMPLES).filter((e) => !(restyle && e === 'KEEP'));
+  const shape = noProject ? NO_PROJECT_EXAMPLES : usePrefix ? USE_PREFIX_EXAMPLES : BARE_PHRASE_EXAMPLES;
+  const examples = shape.filter((e) => !(restyle && e === 'KEEP'));
 
   // Dropping a prefix is a mechanical edit of the title itself, so the conversation has nothing to
   // contribute and the excerpt is left out rather than sent and ignored. Prefix-mode restyle still
@@ -206,8 +272,8 @@ function runClaude(prompt, model, spawn = spawnSync) {
   return res.stdout;
 }
 
-function generateTitle({ currentTitle, prefixes, excerpt, usePrefix = true, restyle = false, model = 'haiku', runner = runClaude }) {
-  return parseResponse(runner(buildPrompt({ currentTitle, prefixes, excerpt, usePrefix, restyle }), model));
+function generateTitle({ currentTitle, prefixes, excerpt, usePrefix = true, restyle = false, project = null, model = 'haiku', runner = runClaude }) {
+  return parseResponse(runner(buildPrompt({ currentTitle, prefixes, excerpt, usePrefix, restyle, project }), model));
 }
 
 // The done judgment's own opening line, exported for the same reason PROMPT_SIGNATURE is: a sweep

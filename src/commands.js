@@ -33,7 +33,7 @@ const resolveProject = (p) => (fs.existsSync(p) ? p : path.join(paths.projectsDi
 // Claude Code encodes the resolved path.
 function echoProjectDir() {
   try {
-    return path.join(paths.projectsDir(), fs.realpathSync(os.tmpdir()).replace(/[^a-zA-Z0-9]/g, '-'));
+    return path.join(paths.projectsDir(), paths.encodePath(fs.realpathSync(os.tmpdir())));
   } catch { return null; }
 }
 

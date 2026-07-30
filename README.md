@@ -45,7 +45,7 @@ Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what 
 
 Wakeups are almost always free: the hook checks one number and exits. A model call only happens when a session is new or has grown a lot since the last check - whether the growth is your messages or agent activity - so even a very long session costs about 5 haiku calls total.
 
-Titles look like `[API] Rate limiter fix`. Prefixes are reused across sessions, so related work clusters in the sidebar. Prefer bare phrases? `claude-session-namer config prefix off`.
+Titles look like `[API] Rate limiter fix`. Prefixes are reused across sessions, so related work clusters in the sidebar. A session that belongs to no project - anything you start from your home directory - keeps a bare name instead of borrowing a prefix from unrelated work. Prefer bare phrases everywhere? `claude-session-namer config prefix off`.
 
 Haiku writes the titles by default, and for an eight-word phrase it is plenty. `claude-session-namer config model sonnet` switches if you want a sharper read of a messy conversation; a sonnet call costs about 3x a haiku one.
 

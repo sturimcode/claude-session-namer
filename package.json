@@ -1,6 +1,6 @@
 {
   "name": "claude-session-namer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
   "bin": { "claude-session-namer": "bin/cli.js" },
   "files": ["bin/cli.js", "src", "LICENSE"],

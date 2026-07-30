@@ -586,6 +586,8 @@ Take no actions beyond these: sync-plan, sweep-done, the per-session rename call
 const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using this app's own scheduled-task tool, create a scheduled task with the id \`${SIDEBAR_TASK_ID}\`, running hourly on the cron schedule \`${SIDEBAR_TASK_CRON}\`. List the existing scheduled tasks first: if one already carries that id, update it rather than adding a second. The task prompt must be exactly this:
 
 ${SIDEBAR_TASK_PROMPT}
+
+Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to run the task once now to prove the whole path.
 `;
 
 // Printed by install only when the user says they use the desktop app.

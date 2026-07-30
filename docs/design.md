@@ -19,7 +19,7 @@ A zero-dependency Node CLI plus a Claude Code Stop hook that keeps session title
 - Manual rename, protect, list, and search commands
 - No API key - titles are generated via `claude -p --model haiku` on the user's existing subscription
 
-MIT license. npm distribution now (`npm install -g claude-session-namer`, then `claude-session-namer install`), Claude Code plugin wrapper as a later phase. A global install rather than `npx`: the hook wrapper embeds the absolute path to the CLI, and an npx path points into a cache directory that gets pruned.
+MIT license. Two distribution paths, both shipping: npm (`npm install -g claude-session-namer`, then `claude-session-namer install`) and a Claude Code plugin (see Plugin distribution below). A global npm install rather than `npx`: the hook wrapper embeds the absolute path to the CLI, and an npx path points into a cache directory that gets pruned.
 
 ## Mechanism
 
@@ -31,7 +31,16 @@ MIT license. npm distribution now (`npm install -g claude-session-namer`, then `
 2. Exits immediately if `CLAUDE_SESSION_NAMER_WORKER=1` is set in the environment - this is the recursion guard; our own headless title calls also fire Stop hooks, and the worker sets this var when spawning `claude -p`
 3. Spawns the worker as a detached background process and exits
 
-The hook adds zero perceptible latency and produces no output (`suppressOutput`).
+The hook adds zero perceptible latency and produces no output.
+
+### Plugin distribution
+
+The same hook is also registered by a Claude Code plugin, so a user can install the tool without npm and without running `install`. The repo is its own marketplace: `.claude-plugin/marketplace.json` at the root lists one plugin whose `source` is `"./"`, which makes the plugin root the repo root and puts `bin/` and `src/` inside `${CLAUDE_PLUGIN_ROOT}`. `.claude-plugin/plugin.json` carries the metadata, versioned in lockstep with package.json. `hooks/hooks.json` registers the Stop hook as `command -v node >/dev/null 2>&1 || exit 0; exec node "${CLAUDE_PLUGIN_ROOT}/bin/cli.js" hook`, timeout 15 - the same entry point, the same timeout, and the same silence as the wrapper `install` writes. The node guard replaces the wrapper's fallback to the installer's own node, which a plugin install has no equivalent of: nothing recorded a path at install time.
+
+- `suppressOutput` is a hook *output* field in the current schema, not config. It costs nothing here: the hook writes nothing to stdout on any path, so there is no output to suppress.
+- Nothing about the worker changes. `src/hook.js` resolves the CLI as `path.join(__dirname, '..', 'bin', 'cli.js')`, so the spawn follows the package wherever it is unpacked, and state stays at `~/.claude/claude-session-namer` (`CLAUDE_CONFIG_DIR`) regardless of install method. Switching between npm and plugin keeps every title claim, protection flag, and prefix count. The `CLAUDE_SESSION_NAMER_WORKER=1` recursion guard is the first line of the hook and is unaffected by how the hook was registered.
+- `bin/claude-session-namer` is a shell wrapper over `bin/cli.js`. Claude Code adds an enabled plugin's `bin/` to the PATH of Bash tool calls, so it makes `backfill`, `rename`, `list` and the rest runnable inside a session on a plugin-only install. It does not reach the user's own shell; npm is still what puts the command there.
+- Double-install is documented, not detected. Two registrations mean two workers per Stop event. The claim-before-append ordering is what keeps that benign rather than any lock: each worker re-loads state after its model call and claims its title in `written` before appending, so the second worker to finish sees the first one's title already recorded as ours. It appends its own title after it - a second `custom-title` record, which is a shape the app itself produces constantly - and the last record wins, the way it does for any re-title. Both strings are in `written`, so neither is ever mistaken for a human's later. Appends are a single `appendFileSync` well under `PIPE_BUF`, so they cannot interleave. The cost of a double install is a doubled model bill for the same title, not a broken session, and the README says to install one way, not both.
 
 ### Worker
 
@@ -110,6 +119,7 @@ Verified against current Anthropic docs (2026-07-29):
 1. Private repo at `github.com/sturimcode/claude-session-namer`
 2. Build, test locally against real sessions, run and verify backfill
 3. Public: README (install, what it does, unsupported-internals caveat, cost note), npm publish, repo public
+4. Plugin: the manifests ship in the same repo, so making the repo public makes it installable as a plugin with no separate release step. `claude plugin validate .` is the pre-publish check. Submitting to `claude-community` is optional and independent of the npm release
 
 ## Ongoing maintenance
 
@@ -121,7 +131,7 @@ Recurring research sweep (monthly, set up as a scheduled task once the tool ship
 
 ## Later (V2+)
 
-- Claude Code plugin wrapper (hooks + slash commands via plugin distribution)
+- Slash commands in the plugin (`/claude-session-namer:backfill` and friends) - the plugin ships the Stop hook and the CLI on the Bash PATH, and skills over the top of that are the next increment
 - Optional API-key mode for users who prefer metered billing over subscription usage
 - `--concurrency <n>` for backfill: a few parallel CLI calls would cut a sweep several-fold (the per-call cost is CLI startup, not the model). Held out of v1 on purpose - the sequential throttle is rate-limit politeness, and how the subscription layer treats parallel headless calls is untested
 - Swap the JSONL append for a public title API if Anthropic ships one

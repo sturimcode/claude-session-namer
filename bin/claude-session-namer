@@ -1,0 +1,8 @@
+#!/bin/sh
+# Claude Code puts an enabled plugin's bin/ on the Bash tool's PATH, so this file is what makes
+# `claude-session-namer backfill` (and the rest) work in a plugin install with no npm anywhere.
+# npm installs never reach it: package.json's "bin" maps the same command name straight to cli.js.
+# $0 is the resolved path when a shell finds a command on PATH, but resolving it here rather than
+# trusting the caller's cwd keeps the wrapper correct however it is invoked.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$dir/cli.js" "$@"

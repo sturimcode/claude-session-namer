@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 || exit 0; exec node \"${CLAUDE_PLUGIN_ROOT}/bin/cli.js\" hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

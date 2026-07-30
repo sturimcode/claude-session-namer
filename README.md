@@ -18,6 +18,25 @@ Titles you set through `rename` or `protect` are never overwritten. Those mark t
 
 ## Install
 
+Two ways in: as a Claude Code plugin, or from npm. Pick one. Installing both ways registers the Stop hook twice and runs two workers on every turn, which is wasted model calls for the same title.
+
+### As a plugin
+
+```
+/plugin marketplace add sturimcode/claude-session-namer
+/plugin install claude-session-namer@claude-session-namer
+```
+
+The repo is its own marketplace, so those two lines are the whole install. The plugin carries the Stop hook, so there is no `claude-session-namer install` step here - running it would be the double-install above.
+
+Claude Code puts an enabled plugin's `bin/` on the PATH of every Bash command it runs, so inside a session you can ask Claude to run `claude-session-namer backfill --dry-run` and it works. Your own terminal doesn't see it. If you want the command in your shell, install from npm instead.
+
+Requires a `node` on your PATH. The hook exits quietly if there isn't one, the same way it exits quietly on every other failure.
+
+Removing it is `/plugin uninstall claude-session-namer@claude-session-namer`.
+
+### From npm
+
 1. Install the package:
 
    ```
@@ -49,6 +68,8 @@ claude-session-namer uninstall
 ```
 
 Uninstall removes the hook entry and the wrapper. Titles already written stay.
+
+Either way, state lives in `~/.claude/claude-session-namer` - titles the tool has claimed, the sessions you protected, your prefix setting. Switching from one install method to the other keeps all of it.
 
 ## Commands
 

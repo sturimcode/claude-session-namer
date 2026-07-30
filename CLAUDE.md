@@ -14,6 +14,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 - `src/hook.js` - Stop-hook entry: guards, then detached worker spawn
 - `src/settings.js` - `settings.json` hook surgery + wrapper script
 - `src/commands.js` - backfill, rename, protect, list, search, config, sync-plan
+- `.claude-plugin/{plugin,marketplace}.json` + `hooks/hooks.json` - the plugin install path (repo is its own marketplace, `source: "./"`). Registers the same Stop hook `src/settings.js` writes, via `${CLAUDE_PLUGIN_ROOT}/bin/cli.js hook`. `bin/claude-session-namer` puts the CLI on the Bash PATH for plugin installs
 
 ## Domain facts that cost real debugging to learn
 
@@ -30,6 +31,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 - `--dry-run` writes nothing, anywhere. The app store is never written, only read. `settings.json` surgery must round-trip unrelated keys byte-faithfully and abort (tagged `err.expected`) rather than guess on malformed shapes.
 - Manual protection: `rename`/`protect` state flag and app `titleSource: 'user'` are hard skips; both are re-checked on fresh state after the (up to 90s) model call before any write.
 - The prefix config is a format contract both ways - see design.md 'Title format'.
+- The version string lives in three files (package.json and both plugin manifests) and the Stop hook timeout in two (`src/settings.js` and `hooks/hooks.json`). `test/plugin.test.js` fails when any of them drift apart.
 
 ## Conventions
 

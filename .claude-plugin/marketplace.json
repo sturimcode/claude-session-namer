@@ -1,0 +1,24 @@
+{
+  "name": "claude-session-namer",
+  "owner": {
+    "name": "sturimcode",
+    "url": "https://github.com/sturimcode"
+  },
+  "description": "The claude-session-namer plugin, distributed from its own repository",
+  "plugins": [
+    {
+      "name": "claude-session-namer",
+      "source": "./",
+      "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
+      "version": "0.1.0",
+      "author": {
+        "name": "sturimcode",
+        "url": "https://github.com/sturimcode"
+      },
+      "homepage": "https://github.com/sturimcode/claude-session-namer",
+      "license": "MIT",
+      "category": "productivity",
+      "tags": ["sessions", "titles", "hooks"]
+    }
+  ]
+}

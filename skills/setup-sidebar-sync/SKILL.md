@@ -34,14 +34,15 @@ Create it with the app's own scheduled-task tool, which is what records the sche
 - prompt: exactly the text below, with nothing added or dropped
 
 ```
-Sync claude-session-namer titles into the Claude Code desktop sidebar.
+Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy up.
 
 1. Run `claude-session-namer sync-plan` (do NOT pass `--all` - user-renamed sessions must stay excluded). If the command is not found, stop and say so: it is on this session's Bash PATH only while the plugin is enabled for this folder, or when the npm package is installed globally. Do not guess at a path.
-2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to do - finish silently.
-3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle.
-4. Stop immediately on the first error - no retries, no continuing. Report what failed.
+2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to sync - continue with step 4.
+3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle. Stop on the first rename error - no retries, no continuing - and report what failed.
+4. Run `claude-session-namer sweep-done`. It is a no-op unless the user turned done markers on.
+5. Cleanup: list this app's sessions and archive prior completed runs of this same scheduled task - sessions that are not the current one and whose title exactly matches this task's own name. Never archive the current session, and never archive anything whose title does not match.
 
-Never write files, never modify state, never run backfill or any other command. Only the read-only sync-plan and the rename calls.
+Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, and archiving this task's own previous run sessions. Never run backfill or any other command, and never delete anything.
 ```
 
 The task's working folder needs claude-session-namer reachable from a Bash call: any folder for an npm install, and a folder where this plugin is enabled otherwise.

@@ -1,6 +1,6 @@
 # claude-session-namer - agent context
 
-Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code sessions and re-titles them on drift. `docs/design.md` is the spec of record - read it before changing decision logic. `docs/plans/` is historical build planning, not current truth.
+Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code sessions and re-titles them on drift. `docs/design.md` is the spec of record - read it before changing decision logic.
 
 ## Architecture
 

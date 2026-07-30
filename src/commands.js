@@ -6,7 +6,9 @@ const t = require('./transcript');
 const stateMod = require('./state');
 const appstore = require('./appstore');
 const titler = require('./titler');
-const { PROMPT_SIGNATURE, DONE_PROMPT_SIGNATURE } = require('./titler');
+// Recognizing a transcript of one of our own prompts is one rule, shared with the worker so the hook
+// path and both sweeps cannot disagree about it. See titler.OUR_PROMPT_SIGNATURES.
+const { isOurOwnPrompt, SIDEBAR_TASK_SIGNATURE } = require('./titler');
 const { processSession } = require('./worker');
 
 const flag = (argv, name) => argv.includes(name);
@@ -88,10 +90,9 @@ const ACTIVE_WINDOW_MS = 10 * 60_000;
 const DONE_INACTIVITY_MS = 2 * 3600_000;
 
 // Both prompts this tool sends land in transcripts of their own, and titling or judging one would
-// mint another. sessions() already skips the project dir those land in; this is the belt-and-braces
-// check for a call whose transcript lands somewhere else.
-const isOurOwnPrompt = (firstUserText) =>
-  Boolean(firstUserText) && (firstUserText.startsWith(PROMPT_SIGNATURE) || firstUserText.startsWith(DONE_PROMPT_SIGNATURE));
+// mint another; the hourly routine's own run sessions open with the task prompt below and are ours
+// in the same way. sessions() already skips the project dir the title calls land in; the signature
+// check is the belt-and-braces one, for a run whose transcript lands somewhere else.
 
 // Five dead invocations in a row is a broken `claude` binary, an expired login, or a rate limit -
 // not five unlucky transcripts. Stop rather than burn the rest of the sweep on the same error.
@@ -589,15 +590,18 @@ const SIDEBAR_TASK_CRON = '2 * * * *';
 // The bare name covers both install paths instead. npm puts it on the shell PATH; an enabled
 // plugin's bin/ is on the Bash tool's PATH in any session, and a scheduled run is an ordinary local
 // session, so the plugin's own wrapper answers there.
-const SIDEBAR_TASK_PROMPT = `Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy up.
+// The opening line is titler.SIDEBAR_TASK_SIGNATURE rather than a literal, because it is also how
+// this tool recognizes the routine's own run sessions and declines to title them - see the worker's
+// own-prompt skip. A literal here could be edited without the recognizer following it.
+const SIDEBAR_TASK_PROMPT = `${SIDEBAR_TASK_SIGNATURE}
 
 1. Run \`claude-session-namer sync-plan\` (do NOT pass \`--all\` - user-renamed sessions must stay excluded). If the command is not found, stop and say so: it is on this session's Bash PATH only while the plugin is enabled for this folder, or when the npm package is installed globally. Do not guess at a path.
 2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to sync - continue with step 4.
 3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle. Stop immediately on the first error - no retries, no continuing - and report what failed.
 4. Run \`claude-session-namer sweep-done\`. It is a no-op unless the user turned done markers on.
-5. Cleanup: list this app's sessions and archive prior completed runs of this same scheduled task - sessions that are not the current one and whose title exactly matches this task's own name. Never archive the current session, and never archive anything whose title does not match.
+5. Cleanup: archive prior run sessions of this same scheduled task, identified by their scheduled-task linkage and nothing else. List this app's sessions, and for each candidate call the app's session-detail tool (get_session), which reports the scheduled task a session belongs to. Archive a session only when that linkage names this task's id, \`${SIDEBAR_TASK_ID}\`. Never match on title: claude-session-namer renames these run sessions itself, usually within a couple of replies, so a run's title says nothing about which task produced it. Never archive the current session, and never archive a session whose linkage you could not read.
 
-Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, and archiving this task's own previous run sessions. Never run backfill or any other command, and never delete anything.`;
+Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, the session lookups step 5 needs, and archiving prior run sessions of this task. Never run backfill or any other command, and never delete anything.`;
 
 // The paste path, for an install with no plugin to carry the skill. It is one message to a desktop
 // session: the same creation step the skill runs, condensed to what the assistant needs.
@@ -605,7 +609,7 @@ const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using
 
 ${SIDEBAR_TASK_PROMPT}
 
-Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to prove the path once now, by running the task's steps yourself in this session: \`claude-session-namer sync-plan\`, then the set_session_title call for each line it prints, then \`claude-session-namer sweep-done\`, skipping the cleanup step. Never test it by scheduling the task to fire: a one-time \`fireAt\` run clears the cron schedule and the task disables itself after firing, which leaves the hourly sync dead with nothing said.
+Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__list_sessions", "mcp__ccd_session_mgmt__get_session", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to prove the path once now, by running the task's steps yourself in this session: \`claude-session-namer sync-plan\`, then the set_session_title call for each line it prints, then \`claude-session-namer sweep-done\`, skipping the cleanup step. Never test it by scheduling the task to fire: a one-time \`fireAt\` run clears the cron schedule and the task disables itself after firing, which leaves the hourly sync dead with nothing said.
 `;
 
 // Printed by install only when the user says they use the desktop app.
@@ -674,5 +678,6 @@ module.exports = {
   'sweep-done': sweepDone,
   'sync-plan': syncPlan,
   'sidebar-setup': sidebarSetup,
-  SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK, SIDEBAR_POINTER,
+  // Re-exported beside the template it opens, so a test can pin the two together in one place.
+  SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK, SIDEBAR_POINTER, SIDEBAR_TASK_SIGNATURE,
 };

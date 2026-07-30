@@ -15,8 +15,8 @@ const RECORD_GROWTH_FLOOR = 80;
 
 // Decides whether this session needs a title, asks for one, and writes it.
 // Returns { action, title? } - action is one of:
-//   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | restyled |
-//   dry-run | title-changed
+//   no-turns | own-prompt-skip | manual-skip | app-renamed-skip | no-check-needed | kept | titled |
+//   restyled | dry-run | title-changed
 // `force` opens the format-reformat gate and nothing else - see the restyle block below.
 // `model` has no default here: the hook path passes none, and the configured one is read below
 // alongside the prefix setting. An explicit value wins - that is `backfill --model`, and it stays
@@ -26,6 +26,15 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   const turns = t.countUserTurns(entries);
   const records = entries.length;
   if (turns < 1) return { action: 'no-turns' };
+
+  // A session that opens with one of our own prompts is this tool talking to itself: a headless
+  // title or done call, or - the expensive one - a run of the hourly sidebar routine, whose first
+  // user message is the task prompt we ship. Titling those spent a haiku call per run naming our own
+  // automation, and the rename broke the routine's cleanup step in the field: it recognized its
+  // prior runs by title, and this hook renamed them out from under it within a couple of replies.
+  // Ahead of every gate below, so such a session gets no title, no drift check, and - because the
+  // sweeps share this test - no done marker either.
+  if (titler.isOurOwnPrompt(t.firstUserText(entries))) return { action: 'own-prompt-skip' };
 
   const s = stateMod.load();
   const sess = stateMod.session(s, sessionId);
@@ -53,7 +62,12 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // counting the marked record itself - anything past it is the session moving again.
   const wasMarked = titler.isMarked(title);
   const core = wasMarked ? titler.stripMarker(title) : title;
-  const resuming = wasMarked && sess.written.includes(core) && records > (sess.doneCheckedRecords || 0);
+  // Only `sweep-done` mints a marker, and only onto a title of ours - so a marker sitting on a core
+  // we never wrote came from somewhere else, and this tool knows nothing about what it claims. That
+  // distinction owns both halves of the marker's life below: whether it can be stripped mechanically
+  // on resume, and whether it can be carried onto a title we are about to write.
+  const markerIsOurs = wasMarked && sess.written.includes(core);
+  const resuming = markerIsOurs && records > (sess.doneCheckedRecords || 0);
   if (resuming) {
     title = core;
     if (!dryRun) {
@@ -151,11 +165,16 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
     runner,
   });
 
-  // A session still carrying the marker keeps it through a reformat. The model never saw it, so
-  // re-applying it here is the only way it survives - and a restyle is a change of shape, which is
+  // A session still carrying a marker of ours keeps it through a reformat. The model never saw it,
+  // so re-applying it here is the only way it survives - and a restyle is a change of shape, which is
   // no reason to decide the work started up again. A session that just resumed has had the marker
   // stripped above and takes the bare title.
-  const finalTitle = wasMarked && !resuming ? titler.markTitle(generated) : generated;
+  // A marker on a title we did not write goes no further than that title. Re-applying it would put a
+  // checkmark on a string this tool just derived and nothing ever judged finished - the same minting
+  // `parseResponse` refuses when a model decorates its answer with one. It also flapped: the marked
+  // core would then be ours, with no checkpoint behind it, so the resume path above stripped the
+  // marker on the very next Stop event - two records and a checkmark that appeared and vanished.
+  const finalTitle = markerIsOurs && !resuming ? titler.markTitle(generated) : generated;
 
   // A dry run writes nothing - no transcript record, no state - so it never reaches the reload.
   if (dryRun) {

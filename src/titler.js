@@ -248,8 +248,27 @@ function judgeDone({ currentTitle, excerpt, model = 'haiku', runner = runClaude 
   return parseDone(runner(buildDonePrompt({ currentTitle, excerpt }), model));
 }
 
+// The opening line of the scheduled sidebar routine's task prompt. `commands.js` builds that prompt
+// out of this constant, so the template and the signature cannot drift apart. It sits here with the
+// other two signatures rather than beside the template because the worker and both sweeps all have
+// to recognize it and all already import this module - importing commands.js instead would close a
+// require cycle (commands -> worker -> commands), and commands.js assigns its exports last, so the
+// worker would hold an empty object forever.
+const SIDEBAR_TASK_SIGNATURE = 'Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy up.';
+
+// Every prompt this tool emits can come back at it as some other session's first user message: the
+// two title calls file transcripts of their own, and the hourly routine's run session opens with the
+// task prompt we wrote. Naming any of them spends a model call titling our own automation. The
+// routine's case cost more than the call: the run sessions were how its cleanup step recognized its
+// own prior runs, and renaming them left the artifacts piling up (8 in one day on a real machine).
+// One list, so the hook path and both sweeps refuse exactly the same set.
+const OUR_PROMPT_SIGNATURES = [PROMPT_SIGNATURE, DONE_PROMPT_SIGNATURE, SIDEBAR_TASK_SIGNATURE];
+const isOurOwnPrompt = (firstUserText) =>
+  typeof firstUserText === 'string' && OUR_PROMPT_SIGNATURES.some((sig) => firstUserText.startsWith(sig));
+
 module.exports = {
   buildPrompt, parseResponse, runClaude, generateTitle, matchesFormat, sanitizeForPrompt, PROMPT_SIGNATURE,
   buildDonePrompt, parseDone, judgeDone, DONE_PROMPT_SIGNATURE,
   DONE_MARKER, isMarked, stripMarker, markTitle,
+  SIDEBAR_TASK_SIGNATURE, OUR_PROMPT_SIGNATURES, isOurOwnPrompt,
 };

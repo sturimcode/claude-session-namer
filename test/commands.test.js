@@ -1396,3 +1396,110 @@ test('sweep-done survives a judgment that throws and counts it in the summary', 
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(good.file)), '✓ [API] Rate limiter fix');
 });
+
+// The judgment is the same size of question the titler asks, so it spends the model the user
+// configured - the sweep takes no --model of its own, which is exactly why nothing else would catch
+// this if the config read were dropped.
+test('sweep-done judges on the configured model, haiku by default', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  titledIdle(projectDir, 1);
+  const seen = [];
+  await capture(() => commands['sweep-done']([], { runner: (_p, model) => { seen.push(model); return 'ONGOING'; } }));
+  assert.deepEqual(seen, ['haiku']);
+
+  const state = require('../src/state');
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  titledIdle(projectDir, 2);
+  const after = [];
+  await capture(() => commands['sweep-done']([], { runner: (_p, model) => { after.push(model); return 'ONGOING'; } }));
+  assert.deepEqual(after, ['sonnet'], 'a user who paid for sonnet gets it here too');
+});
+
+// The same guard `backfill` and `list` sit behind, on the command the scheduled routine runs
+// unattended: a --project the user typed wrong must say so rather than read as "nothing to do", and
+// an empty or dangling value must never fall through to a sweep of the whole store.
+test('sweep-done rejects a --project that resolves to nothing, before judging anything', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  const never = () => { throw new Error('a usage error must not start a sweep'); };
+
+  const missing = await exitCodeOf(() => commands['sweep-done'](['--project', '-Users-nope'], { runner: never }));
+  assert.equal(missing.out, '');
+  assert.match(missing.err, /No project directory: -Users-nope/);
+  assert.equal(missing.code, 1);
+
+  for (const argv of [['--project', ''], ['--project', '   '], ['--project']]) {
+    const res = await exitCodeOf(() => commands['sweep-done'](argv, { runner: never }));
+    assert.equal(res.out, '', `sweep-done swept the whole store for ${JSON.stringify(argv)}`);
+    assert.match(res.err, /--project needs a project path or directory name/);
+    assert.equal(res.code, 1);
+  }
+
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), s.title, 'nothing was marked on any of those paths');
+  assert.equal(require('../src/state').load().sessions[s.id].doneCheckedRecords, undefined);
+});
+
+// Five dead calls in a row is a broken binary, an expired login, or a rate limit - not five unlucky
+// transcripts. The sweep stops there rather than spending the rest of the run on the same error, and
+// it records nothing: a session it never judged must stay judgeable once the cause is fixed.
+test('sweep-done aborts after five consecutive failures and checkpoints nothing', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const made = [];
+  for (let i = 1; i <= 7; i++) made.push(titledIdle(projectDir, i));
+  let calls = 0;
+  const { out, err, code } = await exitCodeOf(() => commands['sweep-done']([], {
+    runner: () => { calls++; throw new Error('claude exited 1'); },
+  }));
+  assert.equal(calls, 5, 'the sixth candidate is never asked');
+  assert.match(err, /5 consecutive failures/);
+  assert.match(err, /claude exited 1/);
+  assert.equal(code, 1);
+  // The two candidates past the abort are not "skipped" - the sweep stopped before reaching them.
+  assert.ok(out.includes('0 session(s) marked done, 0 skipped, 5 failed.'), out);
+
+  const state = require('../src/state');
+  for (const s of made) {
+    const sess = state.load().sessions[s.id];
+    assert.equal(sess.doneCheckedRecords, undefined, `${s.short} was checkpointed without a judgment`);
+    assert.equal(sess.done, undefined);
+    const t = require('../src/transcript');
+    assert.equal(t.currentTitle(t.readEntries(s.file)), s.title);
+  }
+});
+
+// The hourly routine's run sessions are ordinary sessions on disk, and their first user message is
+// the task prompt this tool ships. A sweep that titled or marked one would be naming its own
+// automation - and titling them is what broke the routine's cleanup step in the field.
+test('neither sweep touches a session that opens with the sidebar routine\'s task prompt', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const { SIDEBAR_TASK_PROMPT } = commands;
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const title = '[API] Rate limiter fix';
+  const entries = [
+    fx.userEntry(SIDEBAR_TASK_PROMPT),
+    fx.assistantEntry('Ran sync-plan: 2 titles pushed.'),
+    fx.titleEntry(title, id),
+  ];
+  const file = fx.writeTranscript(projectDir, id, entries);
+  // Recorded as ours and idle for hours, so nothing but the signature keeps either sweep off it.
+  const state = require('../src/state');
+  const s = state.load();
+  state.recordTitle(s, id, title, 1, entries.length);
+  state.save(s);
+  age(file, 3 * HOUR);
+
+  const never = () => { throw new Error('our own routine is never worth a model call'); };
+  const swept = await capture(() => commands.backfill([], { runner: never }));
+  assert.ok(swept.includes('0 session(s) titled, 1 skipped.'), swept);
+  const done = await capture(() => commands['sweep-done']([], { runner: never }));
+  assert.ok(done.includes('0 session(s) marked done, 1 skipped.'), done);
+
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), title, 'no marker, no re-title');
+  assert.equal(state.load().sessions[id].doneCheckedRecords, undefined);
+});

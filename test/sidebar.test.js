@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const commands = require('../src/commands');
-const { SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK } = commands;
+const { SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK, SIDEBAR_TASK_SIGNATURE } = commands;
 
 const root = path.join(__dirname, '..');
 const SKILL_PATH = path.join(root, 'skills', 'setup-sidebar-sync', 'SKILL.md');
@@ -68,6 +68,35 @@ test('the task prompt keeps every rule that makes the routine safe to run unatte
   assert.match(SIDEBAR_TASK_PROMPT, /Take no actions beyond these/, 'the action list is closed, not illustrative');
   assert.match(SIDEBAR_TASK_PROMPT, /Never run backfill/, 'an unscoped model-calling sweep is not what the user signed up for');
   assert.match(SIDEBAR_TASK_PROMPT, /never delete anything/, 'archive is the ceiling; deletion never');
+});
+
+// Field report from a real machine: the cleanup step matched prior runs by title, and this tool's
+// own Stop hook renamed those very sessions within a couple of replies - so the match never landed
+// and the run sessions piled up, 8 of them in a day. The identity of a run is its scheduled-task
+// linkage, which nothing here rewrites; the title is the one thing about it that moves.
+test('the cleanup step identifies prior runs by their scheduled-task linkage, never by title', () => {
+  assert.match(SIDEBAR_TASK_PROMPT, /scheduled-task linkage/, 'linkage is what says which task produced a session');
+  assert.match(SIDEBAR_TASK_PROMPT, /get_session/, 'the session-detail tool is where the linkage is read');
+  assert.match(SIDEBAR_TASK_PROMPT, /session-title-sidebar-sync/, 'and the linkage has to name this task specifically');
+  assert.match(SIDEBAR_TASK_PROMPT, /Never match on title/, 'the rule the field report cost us');
+  assert.match(SIDEBAR_TASK_PROMPT, /renames these run sessions itself/, 'say why, or the next edit puts titles back');
+  assert.match(SIDEBAR_TASK_PROMPT, /Never archive the current session/, 'unchanged: cleanup must not eat the run doing the cleaning');
+  assert.match(SIDEBAR_TASK_PROMPT, /never archive a session whose linkage you could not read/, 'no linkage, no archive');
+  // The rule that failed in the field has to be gone, not merely outvoted by the new one.
+  assert.ok(!/title exactly matches/.test(SIDEBAR_TASK_PROMPT), 'title matching is what broke; it cannot survive anywhere in the step');
+});
+
+// The routine's run sessions are sessions like any other, so the Stop hook titles them - which is
+// both a wasted model call and, before this, the thing that broke the cleanup step above. The tool
+// recognizes them by the prompt's opening line, so that line cannot be a copy: the template is built
+// from the exported constant, and the recognizer reads the same one.
+test('the task prompt opens with the signature the tool recognizes its own runs by', () => {
+  assert.equal(typeof SIDEBAR_TASK_SIGNATURE, 'string');
+  assert.ok(SIDEBAR_TASK_PROMPT.startsWith(SIDEBAR_TASK_SIGNATURE), 'the signature must be the prompt\'s literal first line');
+  assert.equal(SIDEBAR_TASK_SIGNATURE, SIDEBAR_TASK_PROMPT.split('\n')[0]);
+  assert.ok(skill().includes(SIDEBAR_TASK_SIGNATURE), 'the copy the skill hands over has to open with it too');
+  const { isOurOwnPrompt } = require('../src/titler');
+  assert.equal(isOurOwnPrompt(SIDEBAR_TASK_PROMPT), true, 'the recognizer and the template are the same string');
 });
 
 // ${CLAUDE_PLUGIN_ROOT} resolves in plugin components - hook and monitor commands, MCP and LSP

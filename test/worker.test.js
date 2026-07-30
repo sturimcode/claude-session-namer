@@ -1072,3 +1072,130 @@ test('a KEEP on a marked title leaves the title exactly as it stands', () => {
   assert.equal(t.currentTitle(t.readEntries(grown)), marked);
   assert.ok(!prompt.includes('✓'), 'the drift check must not see the marker either');
 });
+
+// A marked title this tool did not write is somebody else's checkmark, and the drift check answering
+// with a replacement is the case the KEEP test above stops short of. What the design allows here is
+// narrow: only `sweep-done` marks a session, and only ever a title of ours, so carrying a foreign
+// marker onto a title we just derived would put a checkmark on a string nothing judged finished -
+// the same minting parseResponse strips when a model decorates its answer with one. It also flapped:
+// the marked core became ours with no checkpoint behind it, so the resume path took the marker back
+// off on the very next Stop event. The new title is written bare, in one record.
+test('a drift re-title drops a marker that was sitting on somebody else\'s title', () => {
+  const { worker, state, projectDir } = setup();
+  const marked = '✓ [Emails] Somebody elses label';
+  const t = require('../src/transcript');
+  let file = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry(marked)]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => 'X' }).action, 'no-check-needed');
+
+  file = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry(marked)]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] Bounce triage' });
+  assert.equal(res.action, 'titled');
+  assert.equal(res.title, '[Emails] Bounce triage', 'the foreign checkmark does not transfer to a title of ours');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] Bounce triage');
+  const sess = state.load().sessions.s1;
+  assert.deepEqual(sess.written, ['[Emails] Bounce triage'], 'one string written, so there is one to claim');
+  assert.equal(sess.done, undefined, 'nothing here judged the work finished');
+
+  // And it settles there: the next run has no marker to strip and nothing to ask.
+  const records = t.readEntries(file).length;
+  const after = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('the title we just wrote is not a reason to call again'); },
+  });
+  assert.equal(after.action, 'no-check-needed');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] Bounce triage');
+  assert.equal(t.readEntries(file).length, records, 'no second record chasing the first');
+});
+
+// The marked-restyle rule, end to end from the restyle side and in prefix mode: the reformat carries
+// the marker, and the run after it leaves the session exactly as the restyle left it. The checkpoint
+// the restyle moves is what makes the second half true - without it our own append reads as the user
+// picking the session back up, the marker comes off, and the next sweep pays for a fresh judgment.
+test('a restyled marked title still stands, marker and all, on the next worker run', () => {
+  const { worker, state, projectDir } = setup();
+  const core = 'Rate limiter fix'; // accurate, but bare with prefixes on
+  const marked = `✓ ${core}`;
+  const entries = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, entries.length);
+  const file = fx.writeTranscript(projectDir, 's1', entries);
+
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file, force: true,
+    runner: (p) => { prompt = p; return '[API] Rate limiter fix'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, '✓ [API] Rate limiter fix');
+  assert.ok(!prompt.includes('✓'), 'the marker is never the model\'s to decide');
+
+  const t = require('../src/transcript');
+  const records = t.readEntries(file).length;
+  const after = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('our own restyle is not the session resuming'); },
+  });
+  assert.equal(after.action, 'no-check-needed');
+  assert.equal(t.currentTitle(t.readEntries(file)), '✓ [API] Rate limiter fix', 'the marker is still standing');
+  assert.equal(t.readEntries(file).length, records, 'and nothing was appended to take it off');
+  const sess = state.load().sessions.s1;
+  assert.equal(sess.done, true);
+  assert.equal(sess.doneCheckedRecords, records);
+});
+
+// --- our own prompts ---------------------------------------------------------------------------
+
+// Every prompt this tool sends becomes some session's first user message. The hourly sidebar routine
+// is the expensive one: each scheduled run opens with the task prompt we ship, and the hook titled it
+// like any other session - a model call per run spent naming our own automation, and a rename that
+// broke the routine's own cleanup step, which used to recognize its prior runs by title.
+test('a session that opens with the sidebar routine\'s task prompt is never titled', () => {
+  const { worker, state, projectDir } = setup();
+  const { SIDEBAR_TASK_PROMPT } = require('../src/commands');
+  let calls = 0;
+  const file = fx.writeTranscript(projectDir, 's1', [
+    fx.userEntry(SIDEBAR_TASK_PROMPT),
+    fx.assistantEntry('Ran sync-plan: nothing to sync.'),
+  ]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { calls++; return '[Config] Sidebar title sync'; } });
+  assert.equal(res.action, 'own-prompt-skip');
+  assert.equal(calls, 0, 'no model call is spent on our own routine');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), null);
+  assert.equal(state.load().sessions.s1, undefined, 'and nothing about it is tracked');
+});
+
+// The skip is the whole session's, not just its first exchange: a routine run that has grown, or one
+// that already carries a title, gets no drift check and no restyle either.
+test('a routine run gets no drift check or restyle however far it runs', () => {
+  const { worker, state, projectDir } = setup();
+  const { SIDEBAR_TASK_PROMPT } = require('../src/commands');
+  state.saveConfig({ ...state.loadConfig(), prefix: false });
+  const file = fx.writeTranscript(projectDir, 's1', [
+    fx.userEntry(SIDEBAR_TASK_PROMPT),
+    ...chat(20),
+    fx.titleEntry('[Config] Sidebar title sync'), // a title the app, or an older build of this tool, wrote
+  ]);
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('a routine run is never worth a call'); },
+  });
+  assert.equal(res.action, 'own-prompt-skip');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Config] Sidebar title sync', 'left exactly as found');
+});
+
+// The tool's own headless title and done calls file transcripts of their own, and hooks fire in
+// those sessions too. The env guard catches them at the hook; this is the same refusal one layer in,
+// so a transcript that reached the worker by any other route is refused as well.
+test('the worker refuses a transcript of one of its own title and done calls', () => {
+  const { worker, projectDir } = setup();
+  const titler = require('../src/titler');
+  for (const [id, signature] of [['s1', titler.PROMPT_SIGNATURE], ['s2', titler.DONE_PROMPT_SIGNATURE]]) {
+    const file = fx.writeTranscript(projectDir, id, [
+      fx.userEntry(`${signature}\n\nCurrent title: (none)\n\nConversation excerpt:\nUser: hi`),
+      fx.assistantEntry('[API] Rate fix'),
+    ]);
+    const res = worker.processSession({ sessionId: id, transcriptPath: file, runner: () => { throw new Error('should not be called'); } });
+    assert.equal(res.action, 'own-prompt-skip');
+  }
+});

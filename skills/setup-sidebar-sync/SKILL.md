@@ -40,9 +40,9 @@ Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy
 2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to sync - continue with step 4.
 3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle. Stop immediately on the first error - no retries, no continuing - and report what failed.
 4. Run `claude-session-namer sweep-done`. It is a no-op unless the user turned done markers on.
-5. Cleanup: list this app's sessions and archive prior completed runs of this same scheduled task - sessions that are not the current one and whose title exactly matches this task's own name. Never archive the current session, and never archive anything whose title does not match.
+5. Cleanup: archive prior run sessions of this same scheduled task, identified by their scheduled-task linkage and nothing else. List this app's sessions, and for each candidate call the app's session-detail tool (get_session), which reports the scheduled task a session belongs to. Archive a session only when that linkage names this task's id, `session-title-sidebar-sync`. Never match on title: claude-session-namer renames these run sessions itself, usually within a couple of replies, so a run's title says nothing about which task produced it. Never archive the current session, and never archive a session whose linkage you could not read.
 
-Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, and archiving this task's own previous run sessions. Never run backfill or any other command, and never delete anything.
+Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, the session lookups step 5 needs, and archiving prior run sessions of this task. Never run backfill or any other command, and never delete anything.
 ```
 
 The task's working folder needs claude-session-namer reachable from a Bash call: any folder for an npm install, and a folder where this plugin is enabled otherwise.
@@ -55,10 +55,12 @@ Run-time prompt approvals do not reliably persist for the app's own tools, so of
 "Bash(claude-session-namer sync-plan:*)"
 "Bash(claude-session-namer sweep-done:*)"
 "mcp__ccd_session_mgmt__set_session_title"
+"mcp__ccd_session_mgmt__list_sessions"
+"mcp__ccd_session_mgmt__get_session"
 "mcp__ccd_session_mgmt__archive_session"
 ```
 
-Say what each one is for in a line: the two commands the routine runs, the app's rename tool that pushes titles, and the archive tool the cleanup step uses. If the user declines, that is fine - the routine still works, it just pauses on a prompt whenever an approval has not stuck.
+Say what each one is for in a line: the two commands the routine runs, the app's rename tool that pushes titles, and the three the cleanup step uses to find its own prior runs and archive them. If the user declines, that is fine - the routine still works, it just pauses on a prompt whenever an approval has not stuck.
 
 ## 6. Say what to expect
 

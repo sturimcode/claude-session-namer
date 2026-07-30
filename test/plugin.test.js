@@ -72,6 +72,10 @@ test('the plugin hook timeout matches the one the npm install registers', () => 
   // and a change to either one should fail this test rather than quietly diverge.
   const registered = require('../src/settings').addHook({}, '/some/hook.sh');
   assert.equal(pluginTimeout, registered.hooks.Stop[0].hooks[0].timeout);
+  // And the number itself, because "they agree" is also true of two files that both lost the field:
+  // an absent timeout is not 15, it is Claude Code's default, and the hook spawns a detached worker
+  // whose whole point is that the session never waits on it.
+  assert.equal(pluginTimeout, 15);
 });
 
 test('the cli is on PATH for plugin installs under its own name', () => {

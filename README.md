@@ -27,7 +27,7 @@ claude-session-namer backfill --dry-run   # preview first
 claude-session-namer backfill             # then run it
 ```
 
-Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what it prints. The app's sidebar keeps its own copy of titles, and this sets up an hourly sync into it. Plugin installs can also just ask Claude to "set up sidebar sync".
+Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what it prints. The app's sidebar keeps its own copy of titles and writes that copy back over the name in a live session, so this sets up an hourly sync that puts your title back. Plugin installs can also just ask Claude to "set up sidebar sync".
 
 `claude-session-namer uninstall` removes the hook. Titles already written stay.
 

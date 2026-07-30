@@ -940,3 +940,127 @@ test('sync-plan rejects an unknown flag', async () => {
   assert.match(err, /Unknown option: --push/);
   assert.equal(code, 1);
 });
+
+// sync-plan displacement
+//
+// Observed live 2026-07-29 on the then-current desktop app: the app re-asserts its own REGISTRY
+// title into the transcript of an active session, over the title we appended, and keeps re-asserting
+// it as the session grows. Transcript and registry then agree on the app's name, the plain diff is
+// empty, and the session is stuck with the app's title even though the tool titled it. These tests
+// pin the case where sync-plan proposes our title again.
+
+// Records titles as ours, the way the worker does when it writes them. Order is newest last.
+function weTitled(sessionId, titles, manual = false) {
+  const state = require('../src/state');
+  const s = state.load();
+  for (const title of titles) state.recordTitle(s, sessionId, title, 2);
+  state.session(s, sessionId).manual = manual;
+  state.save(s);
+}
+
+// Stands in for the sidebar routine applying one plan line: the registry row now carries the pushed
+// title while the transcript still says whatever it said.
+function pushIntoStore(cliSessionId, title) {
+  const root = process.env.CLAUDE_SESSION_NAMER_APP_STORE;
+  for (const outer of fs.readdirSync(root)) {
+    const outerDir = path.join(root, outer);
+    for (const inner of fs.readdirSync(outerDir)) {
+      const innerDir = path.join(outerDir, inner);
+      for (const name of fs.readdirSync(innerDir)) {
+        const file = path.join(innerDir, name);
+        const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (record.cliSessionId !== cliSessionId) continue;
+        record.title = title;
+        fs.writeFileSync(file, JSON.stringify(record));
+      }
+    }
+  }
+}
+
+const OURS = '[Emails] SES bounce triage';
+const APP = 'Investigating email delivery';
+
+test('sync-plan proposes our title again when the app displaced it with its own registry title', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
+  // Our record first, then the app's re-assertion of the registry title after it - the sequence a
+  // live session produces.
+  fx.writeTranscript(projectDir, AUTO, [
+    fx.userEntry('why are ses bounces climbing'), fx.titleEntry(OURS, AUTO), fx.titleEntry(APP, AUTO),
+  ]);
+  weTitled(AUTO, [OURS]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [{ sessionId: 'local_aaa', currentTitle: APP, newTitle: OURS }]);
+});
+
+// The newest title we wrote is the one worth having back; an earlier one is a name the session has
+// already outgrown.
+test('sync-plan proposes the newest of our titles when several were written', async () => {
+  const newest = '[Emails] Bounce rate rollback';
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry(APP, AUTO)]);
+  weTitled(AUTO, [OURS, newest]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [{ sessionId: 'local_aaa', currentTitle: APP, newTitle: newest }]);
+});
+
+// `rename` and `protect` are exempt from every re-title, and a re-push is a re-title by another
+// route - a user who locked a session and then renamed it in the app gets to keep both.
+test('sync-plan never re-pushes over a protected session', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry(APP, AUTO)]);
+  weTitled(AUTO, [OURS], true);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+// A name the user typed in the app is theirs whatever our state says, and --all is visibility only.
+test('sync-plan never re-pushes over a title the user typed in the app', async () => {
+  const { commands, projectDir } = fresh({ [USER]: { sessionId: 'local_bbb', title: APP, titleSource: 'user' } });
+  fx.writeTranscript(projectDir, USER, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry(APP, USER)]);
+  weTitled(USER, [OURS]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+  assert.equal(await capture(() => commands['sync-plan'](['--all'])), '');
+});
+
+// The fingerprint of the app's own re-assertion is that the registry says the same thing the
+// transcript now says. A displacing title the registry does not share came from somewhere else - a
+// hand edit, another tool - and the ordinary diff, which pushes the transcript, still governs it.
+test('sync-plan leaves a displacing title the registry does not share to the ordinary diff', async () => {
+  const foreign = 'Renamed by some other tool';
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [
+    fx.userEntry('why are ses bounces climbing'), fx.titleEntry(OURS, AUTO), fx.titleEntry(foreign, AUTO),
+  ]);
+  weTitled(AUTO, [OURS]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [{ sessionId: 'local_aaa', currentTitle: APP, newTitle: foreign }]);
+});
+
+// Nothing displaced us here, so there is nothing new to say: the transcript title is ours and the
+// ordinary diff pushes it, exactly as it did before displacement detection existed.
+test('sync-plan emits only the ordinary diff when the transcript still carries our title', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry(OURS, AUTO)]);
+  weTitled(AUTO, [OURS]);
+  const out = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(jsonLines(out), [{ sessionId: 'local_aaa', currentTitle: 'New session', newTitle: OURS }]);
+});
+
+// The push is what closes the loop, and it must close it rather than start a write war. Once the
+// registry carries our title the plan is empty, whether or not the transcript has caught up yet -
+// re-proposing the app's title in that window is the oscillation this guards against.
+test('sync-plan goes quiet after the re-push lands, before and after the transcript catches up', async () => {
+  const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
+  const turns = [fx.userEntry('why are ses bounces climbing'), fx.titleEntry(OURS, AUTO), fx.titleEntry(APP, AUTO)];
+  fx.writeTranscript(projectDir, AUTO, turns);
+  weTitled(AUTO, [OURS]);
+
+  const [plan] = jsonLines(await capture(() => commands['sync-plan']([])));
+  pushIntoStore(AUTO, plan.newTitle);
+
+  // The transcript still shows the app's title here - the app re-asserts on its own schedule.
+  assert.equal(await capture(() => commands['sync-plan']([])), '', 'a landed push must not be argued with');
+
+  // And once the app re-asserts the registry title we just set, both sides agree on ours.
+  fx.writeTranscript(projectDir, AUTO, [...turns, fx.titleEntry(OURS, AUTO)]);
+  assert.equal(await capture(() => commands['sync-plan']([])), '');
+});

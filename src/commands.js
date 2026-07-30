@@ -353,6 +353,9 @@ async function syncPlan(argv) {
   // session, and only one of them need carry the user marker for the name to be theirs - checking
   // this row's own titleSource alone would still emit a push against a stale sibling row.
   const renamed = appstore.userRenamedIds();
+  // Which titles are ours lives in state and nowhere else - the transcript cannot tell our record
+  // from the app's. Loaded once for the whole plan, like the walk above.
+  const { sessions: known } = stateMod.load();
   for (const entry of appstore.entries()) {
     if (!includeRenamed && (entry.titleSource === 'user' || renamed.has(entry.cliSessionId))) continue;
     // A row the app's API can't be pointed at is not actionable, whatever its title says.
@@ -362,8 +365,33 @@ async function syncPlan(argv) {
     const entries = t.readEntries(sess.file);
     // Sanitized here rather than at the point of printing, so the string compared against the app's
     // title is the same string that would be pushed - no diff that a push could never close.
-    const title = sanitizeTitle(t.titleInfo(entries).title);
-    if (!title || t.isVagueTitle(title, t.firstUserText(entries))) continue;
+    const transcriptTitle = sanitizeTitle(t.titleInfo(entries).title);
+    if (!transcriptTitle) continue;
+    // Titles this tool wrote for the session, newest last. A manual session has none for this
+    // purpose: `rename` and `protect` are exempt from a re-push the same way they are exempt from a
+    // re-title, and so is a name the user typed in the app.
+    const st = known[entry.cliSessionId];
+    const ours = st && !st.manual && Array.isArray(st.written)
+      ? st.written.map(sanitizeTitle).filter(Boolean)
+      : [];
+    // Displacement, observed live 2026-07-29 on the then-current desktop app: while a session is
+    // active the app re-asserts its REGISTRY title into the transcript, over the record we appended.
+    // Both sides then read as the app's name, the plain diff is empty, and the session keeps the
+    // app's title for good even though the tool titled it. Two shapes say that is what happened -
+    // the registry holds the same string that displaced us in the transcript (the re-assertion
+    // itself), or the registry already holds a title of ours from an earlier push and the transcript
+    // has not caught up yet. In both, the only title worth proposing is our newest: pushing the
+    // foreign string back would argue with a push that already landed. A displacing title the
+    // registry does not share came from somewhere else - another tool, a hand edit - and stays with
+    // the ordinary diff below.
+    const displaced = ours.length > 0
+      && entry.titleSource === 'auto'
+      && !ours.includes(transcriptTitle)
+      && (transcriptTitle === entry.title || ours.includes(entry.title));
+    const title = displaced ? ours[ours.length - 1] : transcriptTitle;
+    if (t.isVagueTitle(title, t.firstUserText(entries))) continue;
+    // Nothing to push once the registry already says it - which is also what makes a re-push
+    // idempotent rather than a loop.
     if (title === entry.title) continue;
     process.stdout.write(JSON.stringify({ sessionId: entry.daemonSessionId, currentTitle: entry.title, newTitle: title }) + '\n');
   }

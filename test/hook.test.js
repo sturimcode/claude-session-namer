@@ -155,10 +155,15 @@ test('readStdin resolves with what it has when the stream errors', async () => {
 test('readStdin releases the stream when the timeout fires', async () => {
   const stream = new PassThrough();
   const started = Date.now();
+  // readStdin unrefs its timer so the hook never holds its process open. In a bare test
+  // process that unref lets the event loop drain before the timer fires - a ref'd
+  // keep-alive holds the loop open until the injected timeout has done its job.
+  const keepAlive = setTimeout(() => {}, 2000);
   const read = hook.readStdin(stream, 50);
   stream.write('held open');
   // No end() - a writer that never closes the pipe is exactly the hang case.
   assert.equal(await read, 'held open');
+  clearTimeout(keepAlive);
   assert.ok(Date.now() - started < 1000, 'must resolve on the injected timeout, not hang');
   assert.equal(stream.listenerCount('data'), 0, 'data listener must be removed so the event loop can drain');
   assert.equal(stream.listenerCount('end'), 0);
@@ -169,6 +174,8 @@ test('readStdin releases the stream when the timeout fires', async () => {
 
 test('readStdin absorbs a stream error that arrives after it resolved', async () => {
   const stream = new PassThrough();
+  const keepAlive = setTimeout(() => {}, 2000); // same event-loop hold as above
   assert.equal(await hook.readStdin(stream, 20), '');
+  clearTimeout(keepAlive);
   assert.doesNotThrow(() => stream.emit('error', new Error('EPIPE')));
 });

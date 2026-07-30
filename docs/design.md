@@ -4,7 +4,7 @@
 
 ## Problem
 
-Claude Code names sessions from a truncated first message ('i need to write some sort of...') or leaves them as 'New session'. Sidebars and resume pickers fill with vague names, and sessions get lost. Existing tools each solve half the problem:
+Claude Code names sessions on its own, but the names are vague ('New session', 'General coding session' - worse when a session starts with a screenshot) and never update once the work moves on. Sidebars and resume pickers fill with vague names, and sessions get lost. Existing tools each solve half the problem:
 
 - `claude-rename` writes real titles but names a session once, after the first exchange, and never revisits - long sessions outgrow their names.
 - `claude-chat-namer` stores names in its own sidecar metadata, so the native sidebar never sees them, and it derives names from the first user message - roughly what the vague defaults already are.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config', 'sync-plan', 'sidebar-setup'];
+const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'sweep-done', 'rename', 'protect', 'unprotect', 'list', 'search', 'config', 'sync-plan', 'sidebar-setup'];
 const cmd = process.argv[2];
 
 const help = `claude-session-namer - auto-title Claude Code sessions
@@ -12,12 +12,16 @@ Usage: claude-session-namer <command>
               the last 30 days (--since <days>, --limit <n>, --all for full history,
               --dry-run, --model <m>, --project <path>)
               (--dry-run still calls the model per session)
+  sweep-done  Mark sessions that reached a stopping point with a leading checkmark
+              (needs 'config done-marker on'; --dry-run, --project <path>,
+              --since <days>, --limit <n>)
   rename      Set a session title by hand: rename <session-id> "title"
   protect     Keep a session's current title as it is: protect <session-id>
   unprotect   Allow re-titling again: unprotect <session-id>
   list        List sessions with titles (--project <path>)
   search      Find sessions by title or content: search <query>
-  config      Show or change settings: config [prefix on|off] [model haiku|sonnet]
+  config      Show or change settings:
+              config [prefix on|off] [model haiku|sonnet] [done-marker on|off]
   sync-plan   Print the titles the desktop app's sidebar is missing, as JSON
               lines for an agent to push through the app (--all)
   sidebar-setup

@@ -10,7 +10,10 @@ const DEFAULT = () => ({ sessions: {}, prefixes: {} });
 // isn't a model fails every title call, and the hook is silent on failure by design, so a typo
 // would turn titling off with nothing to show for it.
 const MODELS = ['haiku', 'sonnet'];
-const DEFAULT_CONFIG = () => ({ prefix: true, model: 'haiku' });
+// doneMarker is off by default: it is an extra model call per finished session, and a checkmark in
+// the sidebar is a preference, not a fix for anything. Off has to be what an absent field means too,
+// so it reads `=== true` where prefix reads `!== false`.
+const DEFAULT_CONFIG = () => ({ prefix: true, model: 'haiku', doneMarker: false });
 
 const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 
@@ -67,7 +70,12 @@ function loadConfig() {
     if (!isPlainObject(c)) return DEFAULT_CONFIG();
     // config.json is a plain file a user can hand-edit, so the model is normalized on the way in
     // rather than trusted - anything outside the supported pair reads as the default.
-    return { ...c, prefix: c.prefix !== false, model: MODELS.includes(c.model) ? c.model : 'haiku' };
+    return {
+      ...c,
+      prefix: c.prefix !== false,
+      model: MODELS.includes(c.model) ? c.model : 'haiku',
+      doneMarker: c.doneMarker === true,
+    };
   } catch { return DEFAULT_CONFIG(); }
 }
 

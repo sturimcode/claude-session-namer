@@ -139,3 +139,18 @@ test('buildExcerpt keeps the latest turns even at a small cap', () => {
   assert.ok(ex.length <= 1500);
   assert.ok(ex.includes('reply 29'), 'last turn must survive a small cap');
 });
+
+// The done judgment asks whether the work stopped, which is a fact about how a session ended - so it
+// takes the tail alone, where a title needs the opening turns as well.
+test('buildExcerpt can take the tail alone, and only claims a cut when there was one', () => {
+  const t = require('../src/transcript');
+  const entries = [];
+  for (let i = 0; i < 10; i++) entries.push(fx.userEntry(`turn ${i}`));
+  const tail = t.buildExcerpt(entries, 4000, { headTurns: 0, tailTurns: 3 });
+  assert.equal(tail, '…\nUser: turn 7\nUser: turn 8\nUser: turn 9');
+  // nothing was left out, so nothing pretends anything was
+  const whole = t.buildExcerpt(entries.slice(0, 2), 4000, { headTurns: 0, tailTurns: 3 });
+  assert.equal(whole, 'User: turn 0\nUser: turn 1');
+  // and the default shape is untouched
+  assert.equal(t.buildExcerpt(entries, 4000).startsWith('User: turn 0'), true);
+});

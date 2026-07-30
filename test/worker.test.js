@@ -911,3 +911,108 @@ test('runFromArgs never throws on bad input', () => {
   const file = fx.writeTranscript(projectDir, 's1', [fx.toolResultEntry()]);
   assert.doesNotThrow(() => worker.runFromArgs(['--session', 's1', '--transcript', file, '--model', 'haiku']));
 });
+
+// --- done marker -------------------------------------------------------------------------------
+
+// A session the sweep marked: both strings claimed in `written`, the flag set, and the checkpoint
+// counting the marked record itself. `records` is what the transcript will read as.
+function markedSession(state, id, core, records) {
+  const s = state.load();
+  const sess = state.session(s, id);
+  sess.written = [core, `✓ ${core}`];
+  sess.lastCheckTurns = 2;
+  sess.lastCheckRecords = records;
+  sess.done = true;
+  sess.doneCheckedRecords = records;
+  state.save(s);
+}
+
+// The marker comes off the moment the session moves again, and it comes off without asking anybody:
+// new records are the whole answer to "is the work still over", so a model call here would be spent
+// re-deriving something already known.
+test('a resumed session loses its done marker without a model call', () => {
+  const { worker, state, projectDir } = setup();
+  const core = '[Emails] SES bounce triage';
+  const marked = `✓ ${core}`;
+  const before = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, before.length);
+
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(3), fx.titleEntry(marked)]);
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('stripping the marker must not call the model'); },
+  });
+  assert.equal(res.action, 'no-check-needed');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), core);
+  // and the session is re-armed: not done, no checkpoint, so the next sweep judges it afresh
+  const sess = state.load().sessions.s1;
+  assert.equal(sess.done, false);
+  assert.equal(sess.doneCheckedRecords, undefined);
+  assert.deepEqual(sess.written, [core, marked]);
+});
+
+// The marker is not a reason to look at a session, only something to carry or drop. A marked session
+// nobody has touched costs exactly what any other quiet session costs.
+test('a marked session that has not grown keeps its marker and costs nothing', () => {
+  const { worker, state, projectDir } = setup();
+  const core = '[Emails] SES bounce triage';
+  const marked = `✓ ${core}`;
+  const entries = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, entries.length);
+  const file = fx.writeTranscript(projectDir, 's1', entries);
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('must not call the model'); },
+  });
+  assert.equal(res.action, 'no-check-needed');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), marked);
+  assert.equal(state.load().sessions.s1.done, true);
+});
+
+// A reformat changes the shape of a title, which says nothing about whether the work resumed - so
+// the marker survives it. The model never sees the marker and never gets to decide.
+test('a restyle of a marked title keeps the marker and never shows it to the model', () => {
+  const { worker, state, projectDir } = setup();
+  const core = '[Emails] SES bounce triage';
+  const marked = `✓ ${core}`;
+  const entries = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, entries.length);
+  state.saveConfig({ ...state.loadConfig(), prefix: false });
+  const file = fx.writeTranscript(projectDir, 's1', entries);
+
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file, force: true,
+    runner: (p) => { prompt = p; return 'SES bounce triage'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.equal(res.title, '✓ SES bounce triage');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), '✓ SES bounce triage');
+  assert.ok(!prompt.includes('✓'), 'the marker must never reach the prompt');
+  assert.ok(prompt.includes(`Current title: ${core}`), prompt);
+  // both strings are claimed, so neither reads as a stranger's write later
+  const written = state.load().sessions.s1.written;
+  assert.ok(written.includes('✓ SES bounce triage'), written.join(' | '));
+  assert.ok(written.includes('SES bounce triage'), written.join(' | '));
+  assert.equal(state.load().sessions.s1.done, true);
+});
+
+// A marked title we did not write is somebody else's checkmark - there is no core of ours to fall
+// back to, so nothing is stripped. A KEEP writes nothing at all, marker included.
+test('a KEEP on a marked title leaves the title exactly as it stands', () => {
+  const { worker, projectDir } = setup();
+  const marked = '✓ [Emails] Somebody elses label';
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry(marked)]);
+  let prompt = '';
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: (p) => { prompt = p; return '[Emails] X'; } }).action, 'no-check-needed');
+
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry(marked)]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: (p) => { prompt = p; return 'KEEP'; } });
+  assert.equal(res.action, 'kept');
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(grown)), marked);
+  assert.ok(!prompt.includes('✓'), 'the drift check must not see the marker either');
+});

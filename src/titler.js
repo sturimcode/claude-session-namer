@@ -28,8 +28,20 @@ const BARE_PHRASE_EXAMPLES = [
 const PREFIX_FORM = /^\[[^\]]{1,25}\] \S/;
 const OPENS_WITH_BRACKET = /^\[[^\]]*\]/;
 
+// The "reached a stopping point" marker: a fixed two-character prefix on an otherwise ordinary
+// title, never part of it. Keeping it exactly one checkmark and one space is what lets every other
+// rule stay written in terms of the core title - strip it, reason about what is left, put it back.
+// It is orthogonal to the prefix setting: both shapes can carry it.
+const DONE_MARKER = '✓ ';
+
+const isMarked = (title) => typeof title === 'string' && title.startsWith(DONE_MARKER);
+const stripMarker = (title) => (isMarked(title) ? title.slice(DONE_MARKER.length) : title);
+const markTitle = (core) => (isMarked(core) ? core : DONE_MARKER + String(core == null ? '' : core));
+
 function matchesFormat(title, usePrefix) {
-  const s = typeof title === 'string' ? title : '';
+  // A marked title conforms exactly when its core does. The 45-character cap is a cap on that core,
+  // so a marked title runs two characters longer and is no less conforming for it.
+  const s = typeof title === 'string' ? stripMarker(title) : '';
   // An empty title conforms to nothing - a session with no name is the first-title path's problem,
   // not a reformat.
   if (!s) return false;
@@ -124,6 +136,11 @@ function parseResponse(raw) {
     lines[0];
   s = stripQuotes(s).replace(/[.\s]+$/, '');
 
+  // A title call never sees the done marker - the caller strips it before building the prompt - so a
+  // checkmark coming back is the model decorating its answer, not preserving anything. Minting a
+  // marker here would mark a session nothing judged to be finished, so it comes straight off.
+  s = s.replace(/^✓\s*/, '');
+
   // Degenerate output - nothing, punctuation/symbols only, or a bare "[Prefix]".
   if (!s || /^[\s\p{P}\p{S}]*$/u.test(s) || /^\[[^\]]*\]$/.test(s)) return 'KEEP';
 
@@ -167,4 +184,43 @@ function generateTitle({ currentTitle, prefixes, excerpt, usePrefix = true, rest
   return parseResponse(runner(buildPrompt({ currentTitle, prefixes, excerpt, usePrefix, restyle }), model));
 }
 
-module.exports = { buildPrompt, parseResponse, runClaude, generateTitle, matchesFormat, PROMPT_SIGNATURE };
+// The done judgment's own opening line, exported for the same reason PROMPT_SIGNATURE is: a sweep
+// has to recognize the transcript of one of our own calls and leave it alone. Keep it the literal
+// first line of buildDonePrompt's output.
+const DONE_PROMPT_SIGNATURE = 'You judge whether a chat session between a developer and a coding assistant has finished.';
+
+// One question, two allowed answers. The title goes in as context for what the session set out to
+// do; the excerpt is the tail, because whether work stopped is a fact about how it ended.
+function buildDonePrompt({ currentTitle, excerpt = '' }) {
+  const rules = [
+    '- Answer DONE if the work reached a stopping point: the last thing asked for was delivered, answered, or dropped, and nothing is left half-finished.',
+    '- Answer ONGOING if the session ends mid-task: an open question, a failing command, an unanswered request, a plan with steps left, or work still in progress.',
+    '- If the ending is ambiguous, answer ONGOING.',
+    '- Output ONLY the single word DONE or ONGOING - no preamble, no explanation, no punctuation.',
+  ];
+  const excerptSection = excerpt ? `\n\nEnd of the conversation:\n${excerpt}` : '';
+  return `${DONE_PROMPT_SIGNATURE}
+
+Session title: ${currentTitle ? currentTitle : '(none)'}
+
+Rules:
+${rules.join('\n')}${excerptSection}`;
+}
+
+// ONGOING is the answer anything unclear reads as. Marking a session done that is not is the visible
+// error - a checkmark on work the user is in the middle of - while missing one costs nothing but a
+// re-judgment on the next sweep.
+function parseDone(raw) {
+  const first = (typeof raw === 'string' ? raw : '').split('\n').map((l) => l.trim()).filter(Boolean)[0];
+  return Boolean(first) && /^done\b/i.test(stripQuotes(first));
+}
+
+function judgeDone({ currentTitle, excerpt, model = 'haiku', runner = runClaude }) {
+  return parseDone(runner(buildDonePrompt({ currentTitle, excerpt }), model));
+}
+
+module.exports = {
+  buildPrompt, parseResponse, runClaude, generateTitle, matchesFormat, PROMPT_SIGNATURE,
+  buildDonePrompt, parseDone, judgeDone, DONE_PROMPT_SIGNATURE,
+  DONE_MARKER, isMarked, stripMarker, markTitle,
+};

@@ -5,7 +5,8 @@ const paths = require('./paths');
 const t = require('./transcript');
 const stateMod = require('./state');
 const appstore = require('./appstore');
-const { PROMPT_SIGNATURE } = require('./titler');
+const titler = require('./titler');
+const { PROMPT_SIGNATURE, DONE_PROMPT_SIGNATURE } = require('./titler');
 const { processSession } = require('./worker');
 
 const flag = (argv, name) => argv.includes(name);
@@ -80,6 +81,18 @@ const line = (mtime, sessionId, title, isProtected = false, isAppRenamed = false
 // of their own is already handling them - a sweep would only race that worker for the same job.
 const ACTIVE_WINDOW_MS = 10 * 60_000;
 
+// The bar the done sweep holds a session to instead, and it is deliberately far higher. Ten minutes
+// of silence only says nobody is mid-reply; two hours says the session was left. The question this
+// sweep asks a model is whether the work is over, and a checkmark on a session somebody is about to
+// come back to is the one visible way it can be wrong.
+const DONE_INACTIVITY_MS = 2 * 3600_000;
+
+// Both prompts this tool sends land in transcripts of their own, and titling or judging one would
+// mint another. sessions() already skips the project dir those land in; this is the belt-and-braces
+// check for a call whose transcript lands somewhere else.
+const isOurOwnPrompt = (firstUserText) =>
+  Boolean(firstUserText) && (firstUserText.startsWith(PROMPT_SIGNATURE) || firstUserText.startsWith(DONE_PROMPT_SIGNATURE));
+
 // Five dead invocations in a row is a broken `claude` binary, an expired login, or a rate limit -
 // not five unlucky transcripts. Stop rather than burn the rest of the sweep on the same error.
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -124,12 +137,12 @@ const BACKFILL_VALUE_FLAGS = ['--model', '--project', '--since', '--limit'];
 // a user who thought they were previewing one. Anything we don't recognize is a usage error.
 // A value flag consumes the token after it whatever that token looks like, matching what opt()
 // reads as its value - so the two can never disagree about which tokens are values.
-function unknownBackfillArgs(argv) {
+function unknownArgs(argv, switches, valueFlags) {
   const unknown = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (BACKFILL_SWITCHES.includes(a)) continue;
-    if (BACKFILL_VALUE_FLAGS.includes(a)) { i++; continue; }
+    if (switches.includes(a)) continue;
+    if (valueFlags.includes(a)) { i++; continue; }
     unknown.push(a);
   }
   return unknown;
@@ -148,9 +161,10 @@ function positiveInt(argv, name, unit) {
   return Number(raw);
 }
 
-// Resolves how much history the sweep covers. Returns { days, limit }, either of which is null for
-// "no bound", or null on a usage error the caller should bail on.
-function backfillScope(argv) {
+// Resolves how much history a sweep covers. Returns { days, limit }, either of which is null for
+// "no bound", or null on a usage error the caller should bail on. `usageText` is the caller's own
+// usage line - `sweep-done` takes no --all, so its unknown-flag check rejects one before this runs.
+function sweepScope(argv, usageText) {
   const hasSince = flag(argv, '--since');
   const hasLimit = flag(argv, '--limit');
   // --all means every session, so a window or a cap alongside it is a contradiction rather than a
@@ -159,7 +173,7 @@ function backfillScope(argv) {
   if (flag(argv, '--all')) {
     if (hasSince || hasLimit) {
       const combined = [hasSince && '--since', hasLimit && '--limit'].filter(Boolean).join(' or ');
-      usage(`--all covers your whole history, so it can't be combined with ${combined}\n${BACKFILL_USAGE}`);
+      usage(`--all covers your whole history, so it can't be combined with ${combined}\n${usageText}`);
       return null;
     }
     return { days: null, limit: null };
@@ -176,11 +190,11 @@ function backfillScope(argv) {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 async function backfill(argv, testOpts = {}) {
-  const unknown = unknownBackfillArgs(argv);
+  const unknown = unknownArgs(argv, BACKFILL_SWITCHES, BACKFILL_VALUE_FLAGS);
   if (unknown.length) {
     return usage(`Unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}\n${BACKFILL_USAGE}`);
   }
-  const scope = backfillScope(argv);
+  const scope = sweepScope(argv, BACKFILL_USAGE);
   if (!scope) return;
   if (badProject(argv)) return;
   const dryRun = flag(argv, '--dry-run');
@@ -201,8 +215,7 @@ async function backfill(argv, testOpts = {}) {
     if (sess.mtime > cutoff) { skipped++; continue; }
     // Belt and braces over the echo-dir exclusion in sessions(): wherever a worker transcript
     // lands, its first user message is our own prompt, and titling it would mint another.
-    const first = t.firstUserText(t.readEntries(sess.file));
-    if (first && first.startsWith(PROMPT_SIGNATURE)) { skipped++; continue; }
+    if (isOurOwnPrompt(t.firstUserText(t.readEntries(sess.file)))) { skipped++; continue; }
     let res;
     // One unreadable transcript, one claude invocation that dies, one unwritable state file must
     // not end the sweep - count it, say which session, and keep going.
@@ -244,6 +257,148 @@ async function backfill(argv, testOpts = {}) {
   const summary = dryRun
     ? `[dry-run] ${titled} session(s) would be titled (each cost one model call), ${skipped} skipped`
     : `${titled} session(s) titled, ${skipped} skipped`;
+  process.stdout.write(`${summary}${failed ? `, ${failed} failed` : ''}.\n`);
+}
+
+const SWEEP_DONE_USAGE = 'Usage: claude-session-namer sweep-done [--dry-run] [--project <path>] [--since <days>] [--limit <n>]\n';
+const SWEEP_DONE_SWITCHES = ['--dry-run'];
+// No --model: the judgment is the same size of question the titler asks and belongs on the same
+// configured model. No --all either - marking a session from last year as finished tells nobody
+// anything, and it would be a model call each to say it.
+const SWEEP_DONE_VALUE_FLAGS = ['--project', '--since', '--limit'];
+
+// Marks the sessions whose work has stopped, so a sidebar shows at a glance which ones are still
+// live. Opt-in: off by default, and a no-op when off, because the scheduled sidebar routine calls it
+// unconditionally and a setting nobody turned on should cost nothing rather than error.
+//
+// The economy is the whole design. A session is judged once per size it reaches: answer ONGOING and
+// the size is recorded, so the next sweep over an untouched session asks nothing; answer DONE and
+// the session is flagged and never asked again until it resumes, which is the worker's job to
+// notice. A finished session therefore costs exactly one model call, ever - not one per sweep.
+async function sweepDone(argv, testOpts = {}) {
+  const unknown = unknownArgs(argv, SWEEP_DONE_SWITCHES, SWEEP_DONE_VALUE_FLAGS);
+  if (unknown.length) {
+    return usage(`Unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}\n${SWEEP_DONE_USAGE}`);
+  }
+  const config = stateMod.loadConfig();
+  // Off is not a usage error - it is the default, and the routine that calls this hourly has no way
+  // to know the setting. One line, exit 0, nothing written.
+  if (!config.doneMarker) {
+    process.stdout.write('Done markers are off - nothing swept. Turn them on with: claude-session-namer config done-marker on\n');
+    return;
+  }
+  const scope = sweepScope(argv, SWEEP_DONE_USAGE);
+  if (!scope) return;
+  if (badProject(argv)) return;
+  const dryRun = flag(argv, '--dry-run');
+  // Same scoping as backfill, and for the same reason: the sessions a user still recognizes in
+  // their sidebar are the only ones a marker helps them read.
+  let candidates = sessions(opt(argv, '--project'));
+  if (scope.days !== null) {
+    const windowStart = Date.now() - scope.days * DAY_MS;
+    candidates = candidates.filter((s) => s.mtime >= windowStart);
+  }
+  if (scope.limit !== null) candidates = candidates.slice(0, scope.limit);
+  const cutoff = Date.now() - DONE_INACTIVITY_MS;
+  // One walk of the app store for the whole sweep, like `list` - a per-session lookup would re-read
+  // its few hundred files for every candidate.
+  const renamed = appstore.userRenamedIds();
+  let marked = 0, skipped = 0, failed = 0, consecutiveFailures = 0;
+  for (const sess of candidates) {
+    if (sess.mtime > cutoff) { skipped++; continue; }
+    const entries = t.readEntries(sess.file);
+    const first = t.firstUserText(entries);
+    if (isOurOwnPrompt(first)) { skipped++; continue; }
+    const title = t.titleInfo(entries).title;
+    const st = stateMod.load().sessions[sess.sessionId];
+    // Everything this sweep can act on is a title of ours that is still the session's title. A
+    // session we never titled has nothing of ours to mark; a locked one and a name typed in the app
+    // are the two hard protections, unchanged here; an already-marked one is answered.
+    const ours = st && Array.isArray(st.written) && title && st.written.includes(title);
+    if (!ours || st.manual || st.done || renamed.has(sess.sessionId)) { skipped++; continue; }
+    if (t.isVagueTitle(title, first)) { skipped++; continue; }
+    // One judgment per session size. Without this a sweep would re-ask the same question of the same
+    // unchanged transcript every time it ran, at a model call each.
+    const records = entries.length;
+    if (Number.isInteger(st.doneCheckedRecords) && st.doneCheckedRecords >= records) { skipped++; continue; }
+
+    let done;
+    // One unreadable transcript or one dead `claude` invocation must not end the sweep - count it,
+    // say which session, and keep going, the same way backfill does.
+    try {
+      done = titler.judgeDone({
+        currentTitle: title,
+        // The tail alone: whether the work stopped is a fact about how the session ended, and the
+        // opening turns would only dilute it.
+        excerpt: t.buildExcerpt(entries, 4000, { headTurns: 0, tailTurns: 12 }),
+        model: config.model,
+        runner: testOpts.runner,
+      });
+    } catch (err) {
+      failed++;
+      consecutiveFailures++;
+      const detail = (err && err.message) || String(err);
+      process.stderr.write(`  ! ${sess.sessionId.slice(0, 8)} failed: ${detail}\n`);
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        process.stderr.write(`Aborting: ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Last error: ${detail}\n`);
+        process.exitCode = 1;
+        break;
+      }
+      if (!testOpts.runner) await sleep(500);
+      continue;
+    }
+    consecutiveFailures = 0;
+
+    const markedTitle = titler.markTitle(title);
+    if (dryRun) {
+      // Nothing is written on this path, state included - so a second dry run judges the same
+      // sessions again, and says so by printing them again.
+      if (done) { marked++; process.stdout.write(line(sess.mtime, sess.sessionId, markedTitle)); } else skipped++;
+      if (!testOpts.runner) await sleep(500);
+      continue;
+    }
+
+    // The judgment blocked for up to 90 seconds. Everything read before it is stale, so state is
+    // re-loaded and every protection re-checked against fresh data - the same discipline the worker
+    // keeps, and for the same reason: a `protect` typed inside that window owns the session now.
+    const fresh = stateMod.load();
+    const freshSess = stateMod.session(fresh, sess.sessionId);
+    if (freshSess.manual || appstore.titleSourceFor(sess.sessionId) === 'user') { skipped++; continue; }
+    // And the title we judged has to still be the session's: an app re-assertion or a rename landing
+    // inside the window means the judgment was about a name that is no longer there.
+    if (t.titleInfo(t.readEntries(sess.file)).title !== title) { skipped++; continue; }
+
+    if (!done) {
+      freshSess.doneCheckedRecords = records;
+      stateMod.save(fresh);
+      skipped++;
+      if (!testOpts.runner) await sleep(500);
+      continue;
+    }
+
+    // Claim before the transcript can carry it, the ordering every titled path here keeps: a crash
+    // between the two writes must never leave a title of ours reading as somebody else's. Both
+    // strings go in, because displacement detection, echo recognition and sync-plan all compare
+    // exact strings and a marked title is two of them.
+    if (!freshSess.written.includes(markedTitle)) freshSess.written.push(markedTitle);
+    if (!freshSess.written.includes(title)) freshSess.written.push(title);
+    stateMod.save(fresh);
+    t.appendTitleRecord(sess.file, sess.sessionId, markedTitle);
+    freshSess.done = true;
+    // The append is exactly one record, and the checkpoint has to count it: the worker reads any
+    // record past this number as the session moving again, and our own write is not that.
+    freshSess.doneCheckedRecords = records + 1;
+    stateMod.save(fresh);
+    marked++;
+    process.stdout.write(line(sess.mtime, sess.sessionId, markedTitle));
+    if (!testOpts.runner) await sleep(500);
+  }
+  if (scope.days !== null) {
+    process.stdout.write(`Scanned the ${plural(candidates.length, 'newest session')} from the last ${plural(scope.days, 'day')}.\n`);
+  }
+  const summary = dryRun
+    ? `[dry-run] ${marked} session(s) would be marked done (each cost one model call), ${skipped} skipped`
+    : `${marked} session(s) marked done, ${skipped} skipped`;
   process.stdout.write(`${summary}${failed ? `, ${failed} failed` : ''}.\n`);
 }
 
@@ -299,7 +454,13 @@ async function rename(argv) {
   t.appendTitleRecord(match.file, match.sessionId, title);
   const s = stateMod.load();
   stateMod.recordTitle(s, match.sessionId, title, t.countUserTurns(t.readEntries(match.file)));
-  stateMod.session(s, match.sessionId).manual = true;
+  const sess = stateMod.session(s, match.sessionId);
+  sess.manual = true;
+  // A rename replaces the title wholesale, marker included - a name somebody typed does not inherit
+  // a checkmark. Clearing the flags with it keeps them honest: the session is not marked any more,
+  // and if the lock is ever dropped it can be judged again rather than read as already answered.
+  sess.done = false;
+  delete sess.doneCheckedRecords;
   stateMod.save(s);
   process.stdout.write(`Renamed ${match.sessionId.slice(0, 8)} -> ${title}\n`);
 }
@@ -449,14 +610,15 @@ async function sidebarSetup(argv) {
 // title calls costs a fraction of a cent either way and a full-history sweep is where it shows.
 const SONNET_COST_NOTE = 'Heads up: a sonnet call costs about 3x a haiku call (API rates: $3 vs $1 per million input tokens, $15 vs $5 output). Titles are short, so each call is tiny either way - it adds up mainly on a big backfill.\n';
 
-const CONFIG_USAGE = 'Usage: claude-session-namer config [prefix on|off] [model haiku|sonnet]\n';
+const CONFIG_USAGE = 'Usage: claude-session-namer config [prefix on|off] [model haiku|sonnet] [done-marker on|off]\n';
 
 async function config(argv) {
   const current = stateMod.loadConfig();
   // Bare `config` is the only view of what the tool is set to, so it prints every setting - one a
-  // user can change but never read back is one they can't tell they changed.
+  // user can change but never read back is one they can't tell they changed. The keys printed are
+  // the words `config` accepts back, so a reading is also a set of commands.
   if (argv.length === 0) {
-    process.stdout.write(`prefix: ${current.prefix ? 'on' : 'off'}\nmodel: ${current.model}\n`);
+    process.stdout.write(`prefix: ${current.prefix ? 'on' : 'off'}\nmodel: ${current.model}\ndone-marker: ${current.doneMarker ? 'on' : 'off'}\n`);
     return;
   }
   // argv.length is checked so a trailing argument ("config prefix on globally") is a usage error
@@ -477,12 +639,18 @@ async function config(argv) {
     if (argv[1] === 'sonnet') process.stdout.write(SONNET_COST_NOTE);
     return;
   }
+  if (argv.length === 2 && argv[0] === 'done-marker' && (argv[1] === 'on' || argv[1] === 'off')) {
+    stateMod.saveConfig({ ...current, doneMarker: argv[1] === 'on' });
+    process.stdout.write(`done-marker: ${argv[1]}\n`);
+    return;
+  }
   usage(CONFIG_USAGE);
 }
 
 // The CLI dispatches on the command name, so the hyphenated key is the one that matters.
 module.exports = {
   backfill, rename, protect, unprotect, list, search, sessions, config,
+  'sweep-done': sweepDone,
   'sync-plan': syncPlan,
   'sidebar-setup': sidebarSetup,
   SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK, SIDEBAR_POINTER,

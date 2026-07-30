@@ -306,3 +306,81 @@ test('generateTitle uses injected runner', () => {
   const out = titler.generateTitle({ currentTitle: null, prefixes: [], excerpt: 'User: x', runner });
   assert.equal(out, '[Test] A generated title');
 });
+
+// The done marker is a prefix on a title, never part of it, so every format rule is a rule about
+// what is left once the marker comes off. It is orthogonal to the prefix setting: both shapes carry
+// it the same way, and a marked title is conforming exactly when its core is.
+test('matchesFormat treats a marked title as its core, in both prefix modes', () => {
+  assert.equal(titler.matchesFormat('✓ [Emails] SES bounce fix', true), true);
+  assert.equal(titler.matchesFormat('✓ SES bounce fix', true), false);
+  assert.equal(titler.matchesFormat('✓ SES bounce fix', false), true);
+  assert.equal(titler.matchesFormat('✓ [Emails] SES bounce fix', false), false);
+  // the marker alone is not a title, and a checkmark with no space after it is not the marker
+  assert.equal(titler.matchesFormat('✓ ', true), false);
+  assert.equal(titler.matchesFormat('✓ ', false), false);
+  assert.equal(titler.matchesFormat('✓[Emails] SES bounce fix', true), false);
+  // the marker comes off exactly once - a second one is part of the core, and a core that opens
+  // with a checkmark is not in the prefix form
+  assert.equal(titler.matchesFormat('✓ ✓ [Emails] SES bounce fix', true), false);
+});
+
+test('markTitle and stripMarker round-trip without doubling the marker', () => {
+  const core = '[Emails] SES bounce fix';
+  assert.equal(titler.markTitle(core), '✓ [Emails] SES bounce fix');
+  assert.equal(titler.markTitle(titler.markTitle(core)), '✓ [Emails] SES bounce fix');
+  assert.equal(titler.stripMarker(titler.markTitle(core)), core);
+  assert.equal(titler.stripMarker(core), core);
+  // the cap is a cap on the core, so a marked title is allowed the two extra characters
+  const long = 'a'.repeat(45);
+  assert.equal([...titler.markTitle(long)].length, 47);
+});
+
+// A title call never sees the marker, so a checkmark in the answer is decoration. Letting it through
+// would mark a session nothing judged to be finished.
+test('parseResponse strips a done marker the model echoed back', () => {
+  assert.equal(titler.parseResponse('✓ [Emails] SES bounce fix'), '[Emails] SES bounce fix');
+  assert.equal(titler.parseResponse('"✓ SES bounce fix"'), 'SES bounce fix');
+  assert.equal(titler.parseResponse('✓'), 'KEEP');
+  assert.equal(titler.parseResponse('✓ '), 'KEEP');
+});
+
+test('the done prompt names the title, carries the excerpt, and allows two answers', () => {
+  const p = titler.buildDonePrompt({ currentTitle: '[Emails] SES fix', excerpt: 'User: thanks, that works' });
+  assert.ok(p.startsWith(titler.DONE_PROMPT_SIGNATURE), p);
+  assert.ok(p.includes('[Emails] SES fix'));
+  assert.ok(p.includes('User: thanks, that works'));
+  assert.ok(p.includes('DONE'));
+  assert.ok(p.includes('ONGOING'));
+  // nothing about titles: this call must never come back with one
+  assert.ok(!p.includes('KEEP'), p);
+  assert.ok(!p.includes('45 characters'), p);
+  // and it says which way an unclear ending goes
+  assert.match(p, /ambiguous.*ONGOING/i);
+});
+
+test('the done prompt tolerates a missing title and an empty excerpt', () => {
+  const p = titler.buildDonePrompt({ currentTitle: null });
+  assert.ok(p.includes('(none)'));
+  assert.ok(!p.includes('End of the conversation'), p);
+});
+
+// ONGOING is what anything unclear reads as: a checkmark on work somebody is in the middle of is the
+// visible failure, while a missed one costs a re-judgment on the next sweep and nothing else.
+test('parseDone reads only a clear DONE as done', () => {
+  assert.equal(titler.parseDone('DONE'), true);
+  assert.equal(titler.parseDone('  done  '), true);
+  assert.equal(titler.parseDone('"DONE"'), true);
+  assert.equal(titler.parseDone('DONE - the fix was confirmed'), true);
+  for (const raw of ['ONGOING', 'ongoing', 'I think it is done', 'DONELIKE', '', null, undefined, 'maybe']) {
+    assert.equal(titler.parseDone(raw), false, `${JSON.stringify(raw)} must not read as done`);
+  }
+});
+
+test('judgeDone sends the done prompt on the requested model through the injected runner', () => {
+  const seen = [];
+  const runner = (prompt, model) => { seen.push([prompt, model]); return 'DONE'; };
+  assert.equal(titler.judgeDone({ currentTitle: '[X] Y', excerpt: 'User: bye', model: 'sonnet', runner }), true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0][1], 'sonnet');
+  assert.ok(seen[0][0].startsWith(titler.DONE_PROMPT_SIGNATURE));
+});

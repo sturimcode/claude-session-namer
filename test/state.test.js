@@ -42,16 +42,16 @@ test('load defaults wrong-typed fields to empty objects', () => {
 
 test('loadConfig defaults prefix to true and round-trips', () => {
   const state = freshState();
-  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku', doneMarker: false });
   state.saveConfig({ prefix: false });
-  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku', doneMarker: false });
 });
 
 test('loadConfig defaults model to haiku and round-trips sonnet', () => {
   const state = freshState();
   assert.equal(state.loadConfig().model, 'haiku');
   state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
-  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'sonnet' });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'sonnet', doneMarker: false });
 });
 
 // The CLI only ever writes one of the two, but config.json is a plain file a user can edit. A model
@@ -72,9 +72,9 @@ test('loadConfig keeps keys it does not know about', () => {
   const paths = require('../src/paths');
   require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
   require('node:fs').writeFileSync(paths.configFile(), JSON.stringify({ model: 'haiku', prefix: false }));
-  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false }, 'a save built on loadConfig would otherwise drop them');
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false, doneMarker: false }, 'a save built on loadConfig would otherwise drop them');
   state.saveConfig({ ...state.loadConfig(), prefix: true });
-  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: true });
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: true, doneMarker: false });
 });
 
 test('loadConfig falls back to defaults on a wrong-shaped config file', () => {
@@ -82,10 +82,10 @@ test('loadConfig falls back to defaults on a wrong-shaped config file', () => {
   const paths = require('../src/paths');
   require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
   require('node:fs').writeFileSync(paths.configFile(), '["oops"]');
-  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku', doneMarker: false });
 
   require('node:fs').writeFileSync(paths.configFile(), '{broken');
-  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku', doneMarker: false });
 });
 
 test('recordTitle tracks written titles and prefix counts', () => {
@@ -117,4 +117,22 @@ test('session() leaves lazily added fields intact across a save/load', () => {
   state.save(s);
   const reloaded = state.load();
   assert.equal(state.session(reloaded, 'abc').lastTryTurns, 4);
+});
+
+// doneMarker is off unless it was explicitly turned on, so an absent field and a hand-edited
+// non-boolean both read as off - the opposite default to prefix, and the reason it is checked for
+// `true` rather than for `!== false`.
+test('loadConfig defaults doneMarker to off and round-trips it on', () => {
+  const state = freshState();
+  const paths = require('../src/paths');
+  const fs = require('node:fs');
+  assert.equal(state.loadConfig().doneMarker, false);
+  state.saveConfig({ ...state.loadConfig(), doneMarker: true });
+  assert.equal(state.loadConfig().doneMarker, true);
+
+  fs.mkdirSync(paths.stateDir(), { recursive: true });
+  for (const bad of ['on', 1, 'true', null, {}]) {
+    fs.writeFileSync(paths.configFile(), JSON.stringify({ prefix: true, doneMarker: bad }));
+    assert.equal(state.loadConfig().doneMarker, false, `doneMarker ${JSON.stringify(bad)} should read as off`);
+  }
 });

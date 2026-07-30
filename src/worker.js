@@ -40,7 +40,30 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   if (appstore.titleSourceFor(sessionId) === 'user') return { action: 'app-renamed-skip' };
 
   const info = t.titleInfo(entries);
-  const title = info.title;
+  let title = info.title;
+
+  // The done marker comes off the moment the session picks up again, and it comes off mechanically -
+  // no model call, because nothing about the title's meaning is in question here, only whether the
+  // work is still over, and new records answer that on their own. The core is a title we already
+  // wrote and already claimed, so re-appending it makes no claim we don't hold; both strings sit in
+  // `written`, so neither reads as a stranger's on the next pass.
+  // The test is the transcript's own title rather than the state flag: a marked title with the flag
+  // lost to a corrupt state file still has to be strippable, and a flag with no marker in the
+  // transcript has nothing to strip. `doneCheckedRecords` is the size the session was judged at,
+  // counting the marked record itself - anything past it is the session moving again.
+  const wasMarked = titler.isMarked(title);
+  const core = wasMarked ? titler.stripMarker(title) : title;
+  const resuming = wasMarked && sess.written.includes(core) && records > (sess.doneCheckedRecords || 0);
+  if (resuming) {
+    title = core;
+    if (!dryRun) {
+      sess.done = false;
+      delete sess.doneCheckedRecords;
+      stateMod.save(s);
+      t.appendTitleRecord(transcriptPath, sessionId, core);
+    }
+  }
+
   const vague = t.isVagueTitle(title, t.firstUserText(entries));
 
   // A title we didn't write gets no special standing, whatever record type carries it. The desktop
@@ -116,8 +139,10 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
     return { action: 'no-check-needed' };
   }
 
+  // The model is handed the core, never the marked string: a prompt that carried the marker could
+  // have it edited, echoed, or dropped, and the marker is not the model's to decide.
   const generated = titler.generateTitle({
-    currentTitle: vague ? null : title,
+    currentTitle: vague ? null : core,
     prefixes: stateMod.topPrefixes(s),
     excerpt: t.buildExcerpt(entries),
     usePrefix: config.prefix,
@@ -126,11 +151,17 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
     runner,
   });
 
+  // A session still carrying the marker keeps it through a reformat. The model never saw it, so
+  // re-applying it here is the only way it survives - and a restyle is a change of shape, which is
+  // no reason to decide the work started up again. A session that just resumed has had the marker
+  // stripped above and takes the bare title.
+  const finalTitle = wasMarked && !resuming ? titler.markTitle(generated) : generated;
+
   // A dry run writes nothing - no transcript record, no state - so it never reaches the reload.
   if (dryRun) {
     return generated === 'KEEP'
       ? { action: 'kept', title: vague ? null : title }
-      : { action: 'dry-run', title: generated };
+      : { action: 'dry-run', title: finalTitle };
   }
 
   // generateTitle just blocked for up to 90 seconds on `claude -p`. Anything the copy loaded before
@@ -201,12 +232,18 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
 
   // Claim the title in state BEFORE it can appear in the transcript: a crash between the two
   // writes would otherwise leave our own title looking like a human's on the next run.
+  // Both strings are claimed when the two differ, for the same reason the sweep records both: every
+  // later comparison - displacement, echo recognition, sync-plan - matches exact strings, and a
+  // marked title is two of them.
+  if (!freshSess.written.includes(finalTitle)) freshSess.written.push(finalTitle);
   if (!freshSess.written.includes(generated)) freshSess.written.push(generated);
   stateMod.save(fresh);
-  t.appendTitleRecord(transcriptPath, sessionId, generated);
+  t.appendTitleRecord(transcriptPath, sessionId, finalTitle);
+  // Recorded against the core: it is the string the prefix accounting is about, and a marked title
+  // would read as having no prefix at all.
   stateMod.recordTitle(fresh, sessionId, generated, turns, records);
   stateMod.save(fresh);
-  return { action: needsRestyle ? 'restyled' : 'titled', title: generated };
+  return { action: needsRestyle ? 'restyled' : 'titled', title: finalTitle };
 }
 
 // Flags may appear in any order; a missing flag, or a trailing flag with no value, reads as

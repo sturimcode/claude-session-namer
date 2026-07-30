@@ -43,18 +43,21 @@ Titles look like `[Emails] SES bounce triage`. Prefixes are reused across sessio
 
 Haiku writes the titles by default, and for an eight-word phrase it is plenty. `claude-session-namer config model sonnet` switches if you want a sharper read of a messy conversation; a sonnet call costs about 3x a haiku one.
 
+Sessions that reached a stopping point can carry a checkmark, so one look at the sidebar tells you which work is still open. It is off by default. Turn it on with `claude-session-namer config done-marker on`, then run `claude-session-namer sweep-done` to check the sessions that have been quiet for a couple of hours. The checkmark comes off by itself the moment you pick a session back up.
+
 ## Commands
 
 ```
 install [--no-prefix]      Register the hook
 uninstall                  Remove the hook
 backfill [--dry-run]       Name existing sessions (50 newest by default, --all for everything)
+sweep-done [--dry-run]     Put a checkmark on sessions that reached a stopping point
 rename <session-id> "..."  Set a name yourself and lock it
 protect <session-id>       Lock whatever name a session has now
 unprotect <session-id>     Drop the lock, let renaming resume
 list                       Recent sessions and their names
 search <query>             Find sessions by name or content
-config [prefix on|off] [model haiku|sonnet]
+config [prefix on|off] [model haiku|sonnet] [done-marker on|off]
                            Show or change settings
 sync-plan                  Print what the app sidebar is missing
 sidebar-setup              Set up the hourly sidebar sync

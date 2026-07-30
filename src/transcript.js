@@ -72,21 +72,28 @@ function isVagueTitle(title, firstText) {
   return norm(firstText).startsWith(t);
 }
 
-function buildExcerpt(entries, maxChars = 4000) {
+// `headTurns: 0` asks for the tail alone. A title has to describe the whole session, so it gets the
+// opening turns as well; whether the work stopped is a fact about the ending only, and the opening
+// turns just dilute the excerpt for that question.
+function buildExcerpt(entries, maxChars = 4000, { headTurns = 4, tailTurns = 8 } = {}) {
   const turns = [];
   for (const e of entries) {
     const u = userText(e); if (u !== null) { turns.push(['User', u]); continue; }
     const a = assistantText(e); if (a !== null) turns.push(['Assistant', a]);
   }
   const clip = ([role, text]) => `${role}: ${text.length > 300 ? text.slice(0, 300) + '…' : text}`;
-  // First 4 turns + last 8 turns, joined until cap. The tail is budgeted first so the
+  // First 4 turns + last 8 turns by default, joined until cap. The tail is budgeted first so the
   // most recent turns always survive, however small the cap.
-  const head = turns.slice(0, 4).map(clip);
-  const tailTurns = turns.slice(4).slice(-8);
-  const tail = tailTurns.length ? ['…', ...tailTurns.map(clip)] : [];
+  const head = turns.slice(0, headTurns).map(clip);
+  const rest = turns.slice(headTurns);
+  const picked = rest.slice(-tailTurns);
+  // The ellipsis stands for turns that were left out. With a head there is always something between
+  // it and the tail to stand for; with none, it only earns its place when the tail was actually cut.
+  const lead = picked.length && (headTurns > 0 || rest.length > picked.length) ? ['…'] : [];
+  const tail = [...lead, ...picked.map(clip)];
   const size = (parts) => parts.reduce((n, p) => n + p.length + 1, 0);
   // Drop the oldest tail turns (keeping the leading ellipsis) until the tail fits on its own
-  while (tail.length > 1 && size(tail) > maxChars) tail.splice(1, 1);
+  while (tail.length > lead.length + 1 && size(tail) > maxChars) tail.splice(lead.length, 1);
   const headBudget = maxChars - size(tail);
   let out = '';
   for (const p of head) {

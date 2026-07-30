@@ -482,16 +482,18 @@ test('config prints and toggles prefix setting', async () => {
   await capture(() => commands.config(['prefix', 'off']));
   assert.ok((await capture(() => commands.config([]))).includes('prefix: off'));
   const state = require('../src/state');
-  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku', doneMarker: false });
 });
 
 // Bare `config` is the only place a user can see what the tool is set to, so it has to name every
 // setting - a model that isn't printed is a model nobody knows they changed.
 test('bare config prints every setting', async () => {
   const { commands } = fresh();
-  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: haiku\n');
+  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: haiku\ndone-marker: off\n');
   await capture(() => commands.config(['model', 'sonnet']));
-  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: sonnet\n');
+  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: sonnet\ndone-marker: off\n');
+  await capture(() => commands.config(['done-marker', 'on']));
+  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: sonnet\ndone-marker: on\n');
 });
 
 test('config model sets haiku or sonnet and round-trips', async () => {
@@ -541,7 +543,7 @@ test('config keeps unknown keys and rejects bad arguments', async () => {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ prefix: true, future: 'keep me' }));
   await capture(() => commands.config(['prefix', 'off']));
-  assert.deepEqual(state.loadConfig(), { prefix: false, future: 'keep me', model: 'haiku' });
+  assert.deepEqual(state.loadConfig(), { prefix: false, future: 'keep me', model: 'haiku', doneMarker: false });
 
   const bad = await exitCodeOf(() => commands.config(['prefix', 'maybe']));
   assert.match(bad.err, /Usage/i);
@@ -1063,4 +1065,282 @@ test('sync-plan goes quiet after the re-push lands, before and after the transcr
   // And once the app re-asserts the registry title we just set, both sides agree on ours.
   fx.writeTranscript(projectDir, AUTO, [...turns, fx.titleEntry(OURS, AUTO)]);
   assert.equal(await capture(() => commands['sync-plan']([])), '');
+});
+
+// --- done marker -------------------------------------------------------------------------------
+
+const enableDoneMarker = () => {
+  const state = require('../src/state');
+  state.saveConfig({ ...state.loadConfig(), doneMarker: true });
+};
+
+// A session this tool titled and nobody has touched for hours - the one shape the done sweep acts
+// on. State is written the way the worker writes it, so no test here leans on the sweep's own
+// bookkeeping to set itself up.
+function titledIdle(projectDir, n, { title = '[Emails] SES bounce triage', idleMs = 3 * HOUR } = {}) {
+  const id = `${String(n).padStart(8, '0')}-1111-1111-1111-111111111111`;
+  const entries = [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure'), fx.titleEntry(title, id)];
+  const file = fx.writeTranscript(projectDir, id, entries);
+  const state = require('../src/state');
+  const s = state.load();
+  state.recordTitle(s, id, title, 1, entries.length);
+  state.save(s);
+  age(file, idleMs);
+  return { id, short: id.slice(0, 8), file, title, records: entries.length };
+}
+
+// Re-points the app store at a different set of records without disturbing the config dir - what a
+// push through the app's rename API does to the registry between two runs.
+function repointAppStore(entries) {
+  process.env.CLAUDE_SESSION_NAMER_APP_STORE = fx.fakeAppStore(entries);
+  for (const m of ['../src/paths', '../src/state', '../src/appstore', '../src/worker', '../src/commands']) delete require.cache[require.resolve(m)];
+  return require('../src/commands');
+}
+
+test('config done-marker toggles the setting and round-trips', async () => {
+  const { commands } = fresh();
+  const state = require('../src/state');
+  assert.equal(await capture(() => commands.config(['done-marker', 'on'])), 'done-marker: on\n');
+  assert.equal(state.loadConfig().doneMarker, true);
+  assert.equal(await capture(() => commands.config(['done-marker', 'off'])), 'done-marker: off\n');
+  assert.equal(state.loadConfig().doneMarker, false);
+});
+
+test('config rejects a done-marker value that is not on or off and writes nothing', async () => {
+  const { commands, configDir } = fresh();
+  const configFile = path.join(configDir, 'claude-session-namer', 'config.json');
+  for (const argv of [['done-marker'], ['done-marker', 'yes'], ['done-marker', 'true'], ['done-marker', 'on', 'please']]) {
+    const res = await exitCodeOf(() => commands.config(argv));
+    assert.match(res.err, /Usage/i);
+    assert.equal(res.code, 1);
+    assert.equal(fs.existsSync(configFile), false, `config ${argv.join(' ')} must not write`);
+  }
+});
+
+// The scheduled sidebar routine calls this unconditionally, so a setting nobody turned on has to
+// cost one line and exit 0 rather than read as an error.
+test('sweep-done does nothing and says so when done markers are off', async () => {
+  const { commands, projectDir } = fresh();
+  const s = titledIdle(projectDir, 1);
+  const { out, code } = await exitCodeOf(() => commands['sweep-done']([], {
+    runner: () => { throw new Error('must not judge anything with the setting off'); },
+  }));
+  assert.match(out, /Done markers are off/);
+  assert.match(out, /config done-marker on/);
+  assert.equal(code, undefined);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), s.title);
+  assert.equal(require('../src/state').load().sessions[s.id].doneCheckedRecords, undefined);
+});
+
+test('sweep-done marks a session whose work has stopped', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  let calls = 0;
+  let prompt = '';
+  const out = await capture(() => commands['sweep-done']([], { runner: (p) => { calls++; prompt = p; return 'DONE'; } }));
+  assert.equal(calls, 1);
+  assert.ok(out.includes('✓ [Emails] SES bounce triage'), out);
+  assert.ok(out.includes('1 session(s) marked done, 0 skipped.'), out);
+  assert.ok(out.includes('Scanned the 1 newest session from the last 30 days.'), out);
+
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+  // the title is not regenerated - the sweep judges whether the work stopped, nothing else
+  assert.ok(prompt.includes(s.title), prompt);
+
+  const sess = require('../src/state').load().sessions[s.id];
+  assert.equal(sess.done, true);
+  assert.deepEqual(sess.written, [s.title, '✓ [Emails] SES bounce triage']);
+  // the checkpoint counts the record the sweep itself wrote, or the worker would read our own
+  // append as the session picking up again and strip the marker straight back off
+  assert.equal(sess.doneCheckedRecords, t.readEntries(s.file).length);
+});
+
+// The economy the whole command rests on: a judgment is per session size, so an unchanged session is
+// never asked twice, and a finished one is never asked again at all.
+test('sweep-done records an ONGOING judgment and never re-asks at the same size', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  const state = require('../src/state');
+
+  const first = await capture(() => commands['sweep-done']([], { runner: () => 'ONGOING' }));
+  assert.ok(first.includes('0 session(s) marked done, 1 skipped.'), first);
+  assert.equal(state.load().sessions[s.id].doneCheckedRecords, s.records);
+  assert.equal(state.load().sessions[s.id].done, undefined);
+
+  const second = await capture(() => commands['sweep-done']([], {
+    runner: () => { throw new Error('the same transcript must not be judged twice'); },
+  }));
+  assert.ok(second.includes('0 session(s) marked done, 1 skipped.'), second);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), s.title);
+});
+
+test('sweep-done never re-judges a session it already marked', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
+  // the append moved the file's mtime, so age it back past the idle bar - otherwise the second
+  // sweep would skip on recency and prove nothing about the flag
+  age(s.file, 3 * HOUR);
+  const out = await capture(() => commands['sweep-done']([], {
+    runner: () => { throw new Error('a marked session must never be judged again'); },
+  }));
+  assert.ok(out.includes('0 session(s) marked done, 1 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+});
+
+// Ten minutes of quiet only says nobody is mid-reply. This asks a model whether the work is over, so
+// the bar is two hours - a session backfill would happily sweep is still too warm for this.
+test('sweep-done leaves a session touched in the last two hours alone', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  titledIdle(projectDir, 1, { idleMs: 30 * 60_000 });
+  const warm = await capture(() => commands['sweep-done']([], {
+    runner: () => { throw new Error('a session touched half an hour ago must not be judged'); },
+  }));
+  assert.ok(warm.includes('0 session(s) marked done, 1 skipped.'), warm);
+
+  const s = titledIdle(projectDir, 2, { idleMs: 3 * HOUR });
+  const cold = await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
+  assert.ok(cold.includes('1 session(s) marked done, 1 skipped.'), cold);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+});
+
+// Nothing here is a new protection - it is the existing ones, plus the one rule of its own: a title
+// this tool never wrote is not ours to decorate.
+test('sweep-done skips protected, app-renamed, vague, and foreign titles', async () => {
+  const renamedId = '00000002-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [renamedId]: 'user' });
+  enableDoneMarker();
+  const state = require('../src/state');
+
+  const locked = titledIdle(projectDir, 1);
+  const s = state.load();
+  state.session(s, locked.id).manual = true;
+  state.save(s);
+
+  titledIdle(projectDir, 2); // renamed in the desktop app
+  titledIdle(projectDir, 3, { title: 'New session' }); // vague, even though we wrote it
+  // a title nobody recorded as ours - the app's own auto-title, or another tool's
+  const foreignId = '00000004-1111-1111-1111-111111111111';
+  age(fx.writeTranscript(projectDir, foreignId, [
+    fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure'), fx.titleEntry('Someone elses title', foreignId),
+  ]), 3 * HOUR);
+
+  const out = await capture(() => commands['sweep-done']([], {
+    runner: () => { throw new Error('none of these sessions may be judged'); },
+  }));
+  assert.ok(out.includes('0 session(s) marked done, 4 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(locked.file)), locked.title);
+});
+
+test('sweep-done --dry-run writes nothing anywhere', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  const out = await capture(() => commands['sweep-done'](['--dry-run'], { runner: () => 'DONE' }));
+  assert.ok(out.includes('✓ [Emails] SES bounce triage'), out);
+  assert.ok(out.includes('[dry-run] 1 session(s) would be marked done (each cost one model call), 0 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), s.title);
+  const sess = require('../src/state').load().sessions[s.id];
+  assert.equal(sess.done, undefined);
+  assert.equal(sess.doneCheckedRecords, undefined);
+  assert.deepEqual(sess.written, [s.title]);
+});
+
+test('sweep-done rejects --all and any flag it does not know, before judging anything', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  titledIdle(projectDir, 1);
+  for (const argv of [['--all'], ['--dryrun'], ['--model', 'sonnet'], ['extra']]) {
+    const res = await exitCodeOf(() => commands['sweep-done'](argv, {
+      runner: () => { throw new Error('a usage error must not start a sweep'); },
+    }));
+    assert.match(res.err, /Unknown option/);
+    assert.match(res.err, /Usage: claude-session-namer sweep-done/);
+    assert.equal(res.code, 1);
+    assert.equal(res.out, '');
+  }
+});
+
+test('sweep-done takes the scope flags backfill takes', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  titledIdle(projectDir, 1);
+  titledIdle(projectDir, 2);
+  let calls = 0;
+  const out = await capture(() => commands['sweep-done'](
+    ['--project', projectDir, '--since', '90', '--limit', '1'],
+    { runner: () => { calls++; return 'DONE'; } },
+  ));
+  assert.equal(calls, 1, 'the limit has to bound the sweep');
+  assert.ok(out.includes('Scanned the 1 newest session from the last 90 days.'), out);
+  assert.ok(out.includes('1 session(s) marked done, 0 skipped.'), out);
+});
+
+// Displacement is why both strings are recorded. The registry holding a marked title of ours, or the
+// app's own name over one, both still read as ours - so the plan proposes our newest title and stops
+// proposing anything once the registry carries it.
+test('sync-plan pushes a marked title and converges on it', async () => {
+  const id = '00000001-1111-1111-1111-111111111111';
+  const { commands, projectDir } = fresh({ [id]: { titleSource: 'auto', title: 'App auto name', sessionId: 'daemon-1' } });
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  const marked = '✓ [Emails] SES bounce triage';
+  await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
+
+  const plain = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(JSON.parse(plain.trim()), { sessionId: 'daemon-1', currentTitle: 'App auto name', newTitle: marked });
+
+  // the app re-asserts its own registry title into the transcript, over our marked record
+  fs.appendFileSync(s.file, JSON.stringify(fx.titleEntry('App auto name', id)) + '\n');
+  const displaced = await capture(() => commands['sync-plan']([]));
+  assert.deepEqual(JSON.parse(displaced.trim()), { sessionId: 'daemon-1', currentTitle: 'App auto name', newTitle: marked },
+    'a displaced marked session still proposes our own newest title');
+
+  // once the push lands, the registry holds our marked title and there is nothing left to propose
+  const after = repointAppStore({ [id]: { titleSource: 'auto', title: marked, sessionId: 'daemon-1' } });
+  assert.equal(await capture(() => after['sync-plan']([])), '');
+});
+
+// A rename replaces the title wholesale. A name somebody typed does not inherit a checkmark, and the
+// flags behind it go with the old title rather than outliving it.
+test('rename on a marked session replaces the marker rather than inheriting it', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
+  await capture(() => commands.rename([s.id, 'Revisit', 'Monday']));
+
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), 'Revisit Monday');
+  const sess = require('../src/state').load().sessions[s.id];
+  assert.equal(sess.manual, true);
+  assert.equal(sess.done, false);
+  assert.equal(sess.doneCheckedRecords, undefined);
+});
+
+test('sweep-done survives a judgment that throws and counts it in the summary', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  titledIdle(projectDir, 1, { title: '[Emails] Boom' });
+  const good = titledIdle(projectDir, 2);
+  const runner = (prompt) => {
+    if (prompt.includes('Boom')) throw new Error('claude exited 1');
+    return 'DONE';
+  };
+  const { out, err } = await captureBoth(() => commands['sweep-done']([], { runner }));
+  assert.ok(out.includes('1 session(s) marked done, 0 skipped, 1 failed.'), out);
+  assert.match(err, /failed: claude exited 1/);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(good.file)), '✓ [Emails] SES bounce triage');
 });

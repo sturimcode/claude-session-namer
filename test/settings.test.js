@@ -422,7 +422,7 @@ test('install --no-prefix leaves unrelated config keys alone', () => {
   fs.mkdirSync(paths.stateDir(), { recursive: true });
   fs.writeFileSync(paths.configFile(), JSON.stringify({ model: 'haiku' }));
   capture(() => settings.install(['--no-prefix'], { spawn: probeOk() }));
-  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false });
+  assert.deepEqual(state.loadConfig(), { model: 'haiku', prefix: false, doneMarker: false });
 });
 
 test('the cli prints expected errors without a stack trace', () => {

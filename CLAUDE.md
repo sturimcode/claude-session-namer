@@ -13,7 +13,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 - `src/worker.js` - the decision pipeline; every protection and gate lives here
 - `src/hook.js` - Stop-hook entry: guards, then detached worker spawn
 - `src/settings.js` - `settings.json` hook surgery + wrapper script
-- `src/commands.js` - backfill, rename, protect, list, search, config, sync-plan, sidebar-setup. Also holds the sidebar-sync task prompt, the one copy the paste block and `skills/setup-sidebar-sync/SKILL.md` both have to match
+- `src/commands.js` - backfill, sweep-done, rename, protect, list, search, config, sync-plan, sidebar-setup. Also holds the sidebar-sync task prompt, the one copy the paste block and `skills/setup-sidebar-sync/SKILL.md` both have to match
 - `.claude-plugin/{plugin,marketplace}.json` + `hooks/hooks.json` - the plugin install path (repo is its own marketplace, `source: "./"`). Registers the same Stop hook `src/settings.js` writes, via `${CLAUDE_PLUGIN_ROOT}/bin/cli.js hook`. `bin/claude-session-namer` puts the CLI on the Bash PATH for plugin installs. `skills/setup-sidebar-sync/` is plugin-only too - it stays out of the npm tarball, and `sidebar-setup` is the npm equivalent
 
 ## Domain facts that cost real debugging to learn
@@ -32,6 +32,7 @@ Zero-dependency Node CLI + Claude Code Stop hook that auto-titles Claude Code se
 - The desktop app's scheduled-task registry is app-private, like its session store: we supply the instructions that create the sidebar-sync routine and the app writes it. Never write `~/.claude/scheduled-tasks/` - the schedule and the approved tool permissions live with the app, and a task it did not create carries neither.
 - Manual protection: `rename`/`protect` state flag and app `titleSource: 'user'` are hard skips; both are re-checked on fresh state after the (up to 90s) model call before any write.
 - The prefix config is a format contract both ways - see design.md 'Title format'.
+- The done marker (`✓ `) is a prefix on a title, never part of one: strip it before every prompt and every format check, re-apply it after, and put both strings in `written` so displacement, echo recognition, and sync-plan keep matching. Only `sweep-done` applies it; only the worker's resume path removes it, mechanically. See design.md 'Done marker'.
 - The version string lives in three files (package.json and both plugin manifests) and the Stop hook timeout in two (`src/settings.js` and `hooks/hooks.json`). `test/plugin.test.js` fails when any of them drift apart.
 
 ## Conventions

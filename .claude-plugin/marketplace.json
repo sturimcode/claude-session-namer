@@ -10,7 +10,7 @@
       "name": "claude-session-namer",
       "source": "./",
       "description": "Names Claude Code sessions more accurately and keeps the names accurate as the conversation changes.",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "author": {
         "name": "sturimcode",
         "url": "https://github.com/sturimcode"

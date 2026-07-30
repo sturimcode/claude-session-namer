@@ -19,6 +19,11 @@ const chat = (n) => {
   return out;
 };
 
+// A heavily agentic session: a couple of real prompts and a long tail of tool traffic. Tool results
+// are user-type records that carry no user text, so they grow the transcript's record count without
+// moving its user-turn count - which is the shape the record-growth trigger exists for.
+const agentic = (turns, toolRecords) => [...chat(turns), ...Array.from({ length: toolRecords }, () => fx.toolResultEntry())];
+
 test('titles a fresh session after first exchange', () => {
   const { worker, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(1));
@@ -379,6 +384,83 @@ test('a title appearing mid-generate is left alone without locking the session',
   assert.equal(state.load().sessions.s1.manual, false);
 });
 
+// Observed live 2026-07-29: on an active session the app re-asserts its own registry title into the
+// transcript, which lands inside our generate window and reads exactly like a rename. Abandoning the
+// work there burned a model call per Stop event and left the session on the app's name for good -
+// nothing appended, nothing recorded. The registry says which case it is: the same string, marked
+// auto, is the app writing what it already had.
+test('a mid-generate title the app registry is displacing us with is written over', () => {
+  const { worker, state, projectDir } = setup({ s1: { titleSource: 'auto', title: 'Fixing the worker gates' } });
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    t.appendTitleRecord(file, 's1', 'Fixing the worker gates'); // the app's auto-titler, mid-call
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES triage');
+  // and the work is recorded, so sync-plan has a title of ours to push back at the registry
+  const after = state.load();
+  assert.deepEqual(after.sessions.s1.written, ['[Emails] SES triage']);
+  assert.equal(after.sessions.s1.lastCheckTurns, 2);
+});
+
+// Older app builds wrote no titleSource at all, and absent reads as auto everywhere else here.
+test('a displacing title on a store record with no titleSource is auto too', () => {
+  const { worker, projectDir } = setup({ s1: { title: 'Fixing the worker gates' } });
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => { t.appendTitleRecord(file, 's1', 'Fixing the worker gates'); return '[Emails] SES triage'; };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES triage');
+});
+
+// The narrow exception it has to stay: a title the registry does not hold is somebody else's write -
+// a rename command in another terminal, another tool - and the conservative abort still applies.
+test('a mid-generate title the registry does not hold still aborts', () => {
+  const { worker, state, projectDir } = setup({ s1: { titleSource: 'auto', title: 'Some other app name' } });
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => { t.appendTitleRecord(file, 's1', 'Renamed by hand'); return '[Emails] SES triage'; };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'title-changed');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Renamed by hand');
+  assert.equal(t.readEntries(file).filter((e) => e.type === 'custom-title').length, 1);
+  assert.equal(state.load().sessions.s1, undefined);
+});
+
+// The two hard protections are absolute, displacement or not. A name typed in the app UI inside the
+// window carries the user marker, and that outranks the string comparison entirely.
+test('a mid-generate app rename aborts even though the registry holds the same title', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  const store = process.env.CLAUDE_SESSION_NAMER_APP_STORE;
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    // the user types a name in the app UI: the transcript record and the store row appear together
+    t.appendTitleRecord(file, 's1', 'Revisit Monday');
+    fx.appStoreRecord(store, 's1', { titleSource: 'user', title: 'Revisit Monday' }, 'late');
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'app-renamed-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Revisit Monday');
+  assert.equal(state.load().sessions.s1, undefined);
+});
+
+test('a rename that lands mid-generate aborts even though the registry holds the same title', () => {
+  const { worker, state, projectDir } = setup({ s1: { titleSource: 'auto', title: 'My hand-written name' } });
+  const t = require('../src/transcript');
+  const file = fx.writeTranscript(projectDir, 's1', chat(2));
+  const runner = () => {
+    t.appendTitleRecord(file, 's1', 'My hand-written name');
+    const other = state.load();
+    state.session(other, 's1').manual = true;
+    state.save(other);
+    return '[Emails] SES triage';
+  };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
+});
+
 // The re-check must not fire on the title that was already there when we started - a session whose
 // name is the app's vague default still reads as a custom-title record on the second read.
 test('the mid-generate re-check ignores the vague title the session started with', () => {
@@ -590,6 +672,109 @@ test('force opens the reformat gate on a baselined session and nothing else', ()
   assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
   // and the gate closes on the title it just wrote - a second forced look costs nothing
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: mustNotCall }).action, 'no-check-needed');
+});
+
+// A session with two prompts and hours of tool calls never doubles its user-turn count, so the turn
+// gate alone would never look at it again however far the work moved. The transcript's own record
+// count is the second trigger: quadrupling, with a floor of 80 new records.
+test('the record-growth trigger re-checks an agentic session the turn gate would never look at', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  let file = fx.writeTranscript(projectDir, 's1', chat(2)); // 4 records, 2 user turns
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s1.lastCheckRecords, 4);
+  // the session runs on agentically: 105 records, still 2 user turns, so the turn gate is shut
+  file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 100), fx.titleEntry('[Emails] SES triage')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Worker] Drift gate rewrite' });
+  assert.equal(res.action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Worker] Drift gate rewrite');
+  // the baseline moves with the check, so the next look waits for another quadrupling
+  assert.equal(state.load().sessions.s1.lastCheckRecords, 105);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
+});
+
+// Both conditions, so noise on a short session never qualifies: a 20-record session quadrupling is
+// 60 new records of nothing much, and a 400-record session growing by 100 has barely moved.
+test('the record-growth trigger needs both quadrupling and 80 new records', () => {
+  const { worker, state, projectDir } = setup();
+  const mustNotCall = () => { throw new Error('should not call'); };
+
+  // quadrupled but only 57 new records
+  let file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 56), fx.titleEntry('[Emails] SES triage')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: mustNotCall }).action, 'no-check-needed');
+
+  // 151 new records but not quadrupled
+  let big = fx.writeTranscript(projectDir, 's2', agentic(2, 96)); // 100 records
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: big, runner: () => '[Emails] SES triage' }).action, 'titled');
+  assert.equal(state.load().sessions.s2.lastCheckRecords, 100);
+  big = fx.writeTranscript(projectDir, 's2', [...agentic(2, 246), fx.titleEntry('[Emails] SES triage', 's2')]); // 251
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: big, runner: mustNotCall }).action, 'no-check-needed');
+});
+
+// State written before this field existed carries no record baseline. Reading that as zero would
+// fire the trigger on every long session at once the first time an upgraded worker saw it, so the
+// first sight arms the gate at the size the session is now and fires nothing.
+test('a session with no record baseline arms at its current size without firing', () => {
+  const { worker, state, projectDir } = setup();
+  const t = require('../src/transcript');
+  let file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 30), fx.titleEntry('[Emails] SES triage')]); // 35 records
+  const s = state.load();
+  Object.assign(state.session(s, 's1'), { lastCheckTurns: 2, written: ['[Emails] SES triage'] });
+  state.save(s);
+  assert.equal(state.load().sessions.s1.lastCheckRecords, undefined);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.lastCheckRecords, 35);
+  // armed from now: growth past the baseline it just took is what opens the gate
+  file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 140), fx.titleEntry('[Emails] SES triage')]); // 145 records
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Worker] Drift gate rewrite' }).action, 'titled');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[Worker] Drift gate rewrite');
+});
+
+// Same reasoning as the turn markers: a transcript that shrank is not the one we measured, and the
+// drop is not growth. Re-arm at the new size rather than reading it as a session that quadrupled.
+test('a compacted transcript re-arms the record baseline without firing', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES triage')]);
+  const s = state.load();
+  Object.assign(state.session(s, 's1'), { lastCheckTurns: 2, lastCheckRecords: 200, written: ['[Emails] SES triage'] });
+  state.save(s);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } }).action, 'no-check-needed');
+  assert.equal(state.load().sessions.s1.lastCheckRecords, 5);
+});
+
+// A KEEP is a look like any other - the baseline moves, or an agentic session that has stopped
+// drifting would re-ask on every Stop event for the rest of its life.
+test('a KEEP on a record-growth check moves the record baseline', () => {
+  const { worker, state, projectDir } = setup();
+  let file = fx.writeTranscript(projectDir, 's1', chat(2));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
+  file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 100), fx.titleEntry('[Emails] SES triage')]);
+  let calls = 0;
+  const keep = () => { calls++; return 'KEEP'; };
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep }).action, 'kept');
+  assert.equal(state.load().sessions.s1.lastCheckRecords, 105);
+  for (let i = 0; i < 3; i++) worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep });
+  assert.equal(calls, 1);
+});
+
+// Restyle precedence is unchanged by the second trigger: a non-conforming title can't answer "has
+// this drifted", so the record trigger opens the reformat check the same way the turn gate does.
+test('a record-growth look at a wrong-format title restyles first', () => {
+  const { worker, state, projectDir } = setup();
+  const file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 100), fx.titleEntry('SES bounce triage')]);
+  const s = state.load();
+  Object.assign(state.session(s, 's1'), { lastCheckTurns: 2, lastCheckRecords: 4, written: ['SES bounce triage'] });
+  state.save(s);
+  let prompt = '';
+  const res = worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+  });
+  assert.equal(res.action, 'restyled');
+  assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
 });
 
 // A session with nothing usable to reformat needs a title, not a restyle - the first-title path

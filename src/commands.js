@@ -377,17 +377,13 @@ async function syncPlan(argv) {
     // Displacement, observed live 2026-07-29 on the then-current desktop app: while a session is
     // active the app re-asserts its REGISTRY title into the transcript, over the record we appended.
     // Both sides then read as the app's name, the plain diff is empty, and the session keeps the
-    // app's title for good even though the tool titled it. Two shapes say that is what happened -
-    // the registry holds the same string that displaced us in the transcript (the re-assertion
-    // itself), or the registry already holds a title of ours from an earlier push and the transcript
-    // has not caught up yet. In both, the only title worth proposing is our newest: pushing the
+    // app's title for good even though the tool titled it. The test for it is shared with the
+    // worker's mid-generate guard (`appstore.isDisplaced`), which reads the same two shapes off the
+    // same store row. Where it fires, the only title worth proposing is our newest: pushing the
     // foreign string back would argue with a push that already landed. A displacing title the
     // registry does not share came from somewhere else - another tool, a hand edit - and stays with
     // the ordinary diff below.
-    const displaced = ours.length > 0
-      && entry.titleSource === 'auto'
-      && !ours.includes(transcriptTitle)
-      && (transcriptTitle === entry.title || ours.includes(entry.title));
+    const displaced = ours.length > 0 && appstore.isDisplaced(entry, transcriptTitle, ours);
     const title = displaced ? ours[ours.length - 1] : transcriptTitle;
     if (t.isVagueTitle(title, t.firstUserText(entries))) continue;
     // Nothing to push once the registry already says it - which is also what makes a re-push

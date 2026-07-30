@@ -117,6 +117,48 @@ test('entries is empty for an absent store', () => {
   assert.deepEqual(withStore(path.join(fx.tmpDir(), 'no-such-store')).entries(), []);
 });
 
+// The worker asks about one session and needs the registry title with the marker, not the marker
+// alone - the displacement check compares strings. One lookup answers both questions in one walk.
+test('entryFor returns the registry row for one session, or null', () => {
+  const store = fx.fakeAppStore({});
+  fx.appStoreRecord(store, 'cli-a', { sessionId: 'local_aaa', title: 'App title A', titleSource: 'auto' }, 'a');
+  const appstore = withStore(store);
+  assert.deepEqual(appstore.entryFor('cli-a'), {
+    daemonSessionId: 'local_aaa', cliSessionId: 'cli-a', title: 'App title A', titleSource: 'auto',
+  });
+  assert.equal(appstore.entryFor('cli-nobody'), null);
+  assert.equal(appstore.entryFor(''), null);
+  assert.equal(appstore.entryFor(undefined), null);
+  assert.equal(withStore(path.join(fx.tmpDir(), 'no-such-store')).entryFor('cli-a'), null);
+});
+
+// The fingerprint of the app's auto-titler re-asserting its registry title into the transcript.
+// `sync-plan` and the worker's mid-generate guard both ask this question, of the same store row.
+test('isDisplaced recognises the registry title re-asserted into the transcript', () => {
+  const appstore = withStore(fx.fakeAppStore({}));
+  const auto = { title: 'App auto name', titleSource: 'auto' };
+  assert.equal(appstore.isDisplaced(auto, 'App auto name'), true);
+  // a title the registry does not share came from somewhere else
+  assert.equal(appstore.isDisplaced(auto, 'Renamed by hand'), false);
+  // the user's own name is never displacement, whatever the transcript says
+  assert.equal(appstore.isDisplaced({ title: 'App auto name', titleSource: 'user' }, 'App auto name'), false);
+  // no store row, no signal
+  assert.equal(appstore.isDisplaced(null, 'App auto name'), false);
+  assert.equal(appstore.isDisplaced(auto, null), false);
+});
+
+// The second shape, which only `sync-plan` asks about: the registry already carries a title of ours
+// from an earlier push and the transcript has not caught up. A caller passing no titles of its own
+// gets the re-assertion shape alone.
+test('isDisplaced covers a registry already holding one of our titles', () => {
+  const appstore = withStore(fx.fakeAppStore({}));
+  const entry = { title: '[Emails] SES triage', titleSource: 'auto' };
+  assert.equal(appstore.isDisplaced(entry, 'App auto name', ['[Emails] SES triage']), true);
+  assert.equal(appstore.isDisplaced(entry, 'App auto name'), false);
+  // a title that is already ours is not displacement at all
+  assert.equal(appstore.isDisplaced(entry, '[Emails] SES triage', ['[Emails] SES triage']), false);
+});
+
 // An id given to us is not a path component. A store lookup must never walk out of the store.
 test('a session id that looks like a path does not escape the store', () => {
   const appstore = withStore(fx.fakeAppStore({ 'sess-user': 'user' }));

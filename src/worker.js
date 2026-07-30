@@ -4,6 +4,15 @@ const stateMod = require('./state');
 const titler = require('./titler');
 const appstore = require('./appstore');
 
+// The second growth trigger, for sessions the user-turn count cannot see: a heavily agentic session
+// spends hundreds of records on two or three prompts, so its turn count barely moves while the work
+// changes completely. Quadrupling keeps calls log-scaled in records the way doubling keeps them
+// log-scaled in turns - a 400-record session gets a couple of re-checks rather than none. The floor
+// is the other half of the condition: on a short session a quadrupling is a few dozen records of
+// ordinary back-and-forth, which is noise, not a topic change.
+const RECORD_GROWTH_FACTOR = 4;
+const RECORD_GROWTH_FLOOR = 80;
+
 // Decides whether this session needs a title, asks for one, and writes it.
 // Returns { action, title? } - action is one of:
 //   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | restyled |
@@ -15,6 +24,7 @@ const appstore = require('./appstore');
 function processSession({ sessionId, transcriptPath, model, dryRun = false, force = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
+  const records = entries.length;
   if (turns < 1) return { action: 'no-turns' };
 
   const s = stateMod.load();
@@ -52,18 +62,35 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // a KEEP means there wasn't enough to go on, so wait for the conversation to move first.
   // That retry bound gates the recheck path too: a session whose title record vanished reads
   // vague with a baseline set, and without the growth check it would re-ask on every event.
+  //
+  // The record baseline arms rather than fires on first sight. State written before the field
+  // existed carries none, and a transcript that shrank below its marker measured something that no
+  // longer exists - reading either as zero would treat the session's whole history as growth and
+  // re-check every long session at once. Both cases take the current size as the baseline instead,
+  // so the trigger measures growth from now.
+  const armRecords = !(Number.isInteger(sess.lastCheckRecords) && sess.lastCheckRecords > 0 && records >= sess.lastCheckRecords);
+  const recordsGrew = !armRecords
+    && records >= sess.lastCheckRecords * RECORD_GROWTH_FACTOR
+    && records - sess.lastCheckRecords >= RECORD_GROWTH_FLOOR;
+
   const grew = turns > (sess.lastTryTurns || 0);
   const needsFirst = vague && sess.lastCheckTurns === 0 && grew;
-  const needsRecheck = sess.lastCheckTurns > 0 && turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4 && grew;
+  // Either trigger opens the drift check: the turn count doubling, or the transcript quadrupling in
+  // records. The turn conditions stay exactly as they were - the record trigger is an alternative to
+  // them, not an addition, because an agentic session satisfies neither however far it runs.
+  const turnsGrew = turns >= sess.lastCheckTurns * 2 && turns >= sess.lastCheckTurns + 4;
+  const needsRecheck = sess.lastCheckTurns > 0 && (turnsGrew || recordsGrew) && grew;
 
   // The prefix setting is a format contract, not a preference the model weighs per session: ask for
   // prefixes and every title the tool manages carries one, ask for bare phrases and none does. A
   // title that describes the work accurately but in the wrong shape is reformatted with its meaning
   // intact rather than re-derived - so a session titled before the setting changed, or one the app
   // named in its own format, converges the next time we look at it.
-  // The look is on the doubling gate, and it takes precedence over a drift check: a non-conforming
-  // title can't be the answer to "has this drifted", because a KEEP there would leave the format
-  // wrong for good. A vague title has nothing worth preserving, so the first-title path keeps it.
+  // The look is on the growth gate - either trigger, same as the drift check - and it takes
+  // precedence over a drift check: a non-conforming title can't be the answer to "has this
+  // drifted", because a KEEP there would leave the format wrong for good, and on a record-triggered
+  // look that is exactly the session the trigger exists for. A vague title has nothing worth
+  // preserving, so the first-title path keeps it.
   // `force` bypasses the gate, and a sweep passes it. Without that bypass the feature only ever
   // reaches live sessions: a session that has been looked at before carries a baseline, and one
   // nobody is adding turns to any more never grows past it, so the gate on a finished session never
@@ -73,14 +100,19 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   const needsRestyle = !vague
     && Boolean(title)
     && !titler.matchesFormat(title, config.prefix)
-    && (force || sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2);
+    && (force || sess.lastCheckTurns === 0 || turns >= sess.lastCheckTurns * 2 || recordsGrew);
 
   if (!needsFirst && !needsRecheck && !needsRestyle) {
     // Sessions that arrived already titled (by the app's own title record, usually) have no
     // baseline yet - set one here so drift tracking measures growth from now, not from turn
     // zero. A still-vague session gets no baseline: lastTryTurns is its tracker, and a baseline
     // here would gate out every later attempt and strand the session untitled.
-    if (!vague && sess.lastCheckTurns === 0) { sess.lastCheckTurns = turns; if (!dryRun) stateMod.save(s); }
+    let dirty = false;
+    if (!vague && sess.lastCheckTurns === 0) { sess.lastCheckTurns = turns; dirty = true; }
+    // Arming is a write of its own - the whole point is that the next run measures against the size
+    // this run saw, and a baseline only held in memory would re-arm forever.
+    if (armRecords) { sess.lastCheckRecords = records; dirty = true; }
+    if (dirty && !dryRun) stateMod.save(s);
     return { action: 'no-check-needed' };
   }
 
@@ -121,6 +153,10 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
     // defensively whatever mode asked, so a model that disobeys lands here. The baseline moves, which
     // hands the next look back to the growth cadence rather than re-asking on every Stop event.
     if (vague) freshSess.lastTryTurns = turns; else freshSess.lastCheckTurns = turns;
+    // The record baseline moves on every look, vague or not: it measures the size of the transcript
+    // we last read, and a KEEP has read it in full. Leaving it behind would re-fire the record
+    // trigger on the next Stop event of an agentic session, once per event, for nothing.
+    freshSess.lastCheckRecords = records;
     stateMod.save(fresh);
     return { action: 'kept', title: vague ? null : title };
   }
@@ -135,7 +171,9 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // says who wrote it, so neither the fresh-state check above nor the title comparison below can
   // catch it - only the store marker can. Re-read it: our title would otherwise be appended over
   // the name the user just typed, and the skip at the top would then freeze it there for good.
-  if (appstore.titleSourceFor(sessionId) === 'user') return { action: 'app-renamed-skip' };
+  // The same row answers the displacement question below, so it is read once for both.
+  const registry = appstore.entryFor(sessionId);
+  if (registry && registry.titleSource === 'user') return { action: 'app-renamed-skip' };
   const freshEntries = t.readEntries(transcriptPath);
   const freshInfo = t.titleInfo(freshEntries);
   // The string is what identifies a title, not the record carrying it: the app re-asserts a title
@@ -148,21 +186,25 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   // them. Nothing is marked or recorded: the app's own new auto-title is just as likely, so the
   // next Stop event judges it afresh through the normal flow. Titles that are ours, or vague, or
   // the same string the session already had are not new arrivals and don't trigger this.
-  if (
-    freshInfo.source === 'custom'
+  const arrived = freshInfo.source === 'custom'
     && freshInfo.title !== startedWith
     && !freshSess.written.includes(freshInfo.title)
-    && !t.isVagueTitle(freshInfo.title, t.firstUserText(freshEntries))
-  ) {
-    return { action: 'title-changed' };
-  }
+    && !t.isVagueTitle(freshInfo.title, t.firstUserText(freshEntries));
+  // Except when the arrival is the app displacing us, which on an active session is what usually
+  // happened: the app's auto-titler re-asserts its own registry title into the transcript, and that
+  // read as a foreign rename here. Aborting on it burned a model call per Stop event and wrote
+  // nothing, so a displaced session sat on the app's name for the rest of its life while its state
+  // stayed frozen at the first check. The registry tells the two apart - same string, marked auto,
+  // is the app writing what it already held - and the two hard protections above are unaffected:
+  // both are re-checked on fresh data before this point and abort regardless.
+  if (arrived && !appstore.isDisplaced(registry, freshInfo.title)) return { action: 'title-changed' };
 
   // Claim the title in state BEFORE it can appear in the transcript: a crash between the two
   // writes would otherwise leave our own title looking like a human's on the next run.
   if (!freshSess.written.includes(generated)) freshSess.written.push(generated);
   stateMod.save(fresh);
   t.appendTitleRecord(transcriptPath, sessionId, generated);
-  stateMod.recordTitle(fresh, sessionId, generated, turns);
+  stateMod.recordTitle(fresh, sessionId, generated, turns, records);
   stateMod.save(fresh);
   return { action: needsRestyle ? 'restyled' : 'titled', title: generated };
 }

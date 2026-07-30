@@ -44,10 +44,14 @@ function session(s, id) {
 
 // The written list is a set, not a log - the worker claims a title here before writing it to the
 // transcript, and re-titling with the same string must not grow the list without bound.
-function recordTitle(s, id, title, turns) {
+// `records` is the transcript's record count at the same moment, the second half of the growth
+// baseline. It is optional: a caller that isn't measuring growth (a hand `rename`, which locks the
+// session anyway) leaves the marker as it found it rather than writing a count it didn't take.
+function recordTitle(s, id, title, turns, records) {
   const sess = session(s, id);
   if (!sess.written.includes(title)) sess.written.push(title);
   sess.lastCheckTurns = turns;
+  if (records !== undefined) sess.lastCheckRecords = records;
   const m = title.match(/^\[([^\]]+)\]/);
   if (m) s.prefixes[m[1]] = (s.prefixes[m[1]] || 0) + 1;
 }

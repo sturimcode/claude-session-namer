@@ -37,7 +37,7 @@ Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what 
 2. Haiku skims the conversation and writes a short title, through `claude -p` on your subscription. No API key, no separate billing.
 3. As the session grows it re-checks and renames if the topic has moved on. Your own renames are left alone.
 
-Wakeups are almost always free: the hook checks one number and exits. A model call only happens when a session is new or has roughly doubled in length, so even a very long session costs about 5 haiku calls total.
+Wakeups are almost always free: the hook checks one number and exits. A model call only happens when a session is new or has grown a lot since the last check - whether the growth is your messages or agent activity - so even a very long session costs about 5 haiku calls total.
 
 Titles look like `[Emails] SES bounce triage`. Prefixes are reused across sessions, so related work clusters in the sidebar. Prefer bare phrases? `claude-session-namer config prefix off`.
 

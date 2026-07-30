@@ -2,7 +2,7 @@
 
 Automatically names your Claude Code sessions, and renames them when the conversation becomes something else.
 
-Claude Code names a session after your first message, truncated, and never looks at it again. A week later the sidebar is a wall of "New session" and "i need to write some sort of...". This fixes that: real names, kept current, bucketed by project.
+Claude Code names sessions on its own, but the names are vague ("New session", "General coding session") and stay wrong once the work moves on. This fixes that: clear names, kept current, bucketed by project.
 
 ## Install
 

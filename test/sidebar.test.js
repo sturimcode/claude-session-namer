@@ -63,8 +63,11 @@ test('the task prompt keeps every rule that makes the routine safe to run unatte
   assert.match(SIDEBAR_TASK_PROMPT, /do NOT pass `--all`/, 'a sync that pushes over user renames is the one unacceptable outcome');
   assert.match(SIDEBAR_TASK_PROMPT, /set_session_title/, 'the app rename tool is the only writer');
   assert.match(SIDEBAR_TASK_PROMPT, /Stop immediately on the first error/, 'no retries, no continuing past a failure');
-  assert.match(SIDEBAR_TASK_PROMPT, /Never write files/);
-  assert.match(SIDEBAR_TASK_PROMPT, /never run backfill/, 'a scheduled model-calling sweep is not what the user signed up for');
+  assert.match(SIDEBAR_TASK_PROMPT, /no-op unless the user turned done markers on/, 'the model-calling sweep must stay behind its opt-in');
+  assert.match(SIDEBAR_TASK_PROMPT, /Never archive the current session/, 'cleanup must not eat the run doing the cleaning');
+  assert.match(SIDEBAR_TASK_PROMPT, /Take no actions beyond these/, 'the action list is closed, not illustrative');
+  assert.match(SIDEBAR_TASK_PROMPT, /Never run backfill/, 'an unscoped model-calling sweep is not what the user signed up for');
+  assert.match(SIDEBAR_TASK_PROMPT, /never delete anything/, 'archive is the ceiling; deletion never');
 });
 
 // ${CLAUDE_PLUGIN_ROOT} resolves in plugin components - hook and monitor commands, MCP and LSP

@@ -6,7 +6,7 @@ Claude Code names each session once, early, with barely any context. The guesses
 
 This tool names a session once there's something real to name, re-reads it as the work grows, and renames it when the name has stopped being true. It can also group sessions by project (`[API] Rate limiter fix`) and put a checkmark on sessions whose work is finished - both optional. The sidebar ends up readable at a glance: what each session is, which project it belongs to, whether anything in it is still open.
 
-Names you set yourself are never touched.
+Names you set with `rename` or `protect`, and names you type in the desktop app, are never touched.
 
 ## Install
 
@@ -24,12 +24,14 @@ npm install -g claude-session-namer
 claude-session-namer install
 ```
 
-New sessions name themselves from here on. To name the sessions you already have:
+New sessions name themselves from here on. To name the sessions you already have - in a terminal if you installed with npm, or inside a Claude Code session if you installed the plugin, which puts the command on that session's Bash PATH:
 
 ```
 claude-session-namer backfill --dry-run   # preview first
 claude-session-namer backfill             # then run it
 ```
+
+A dry run writes nothing, but it costs the same model calls as a real run.
 
 Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what it prints. The app's sidebar keeps its own copy of titles and writes that copy back over the name in a live session, so this sets up an hourly sync that puts your title back. Plugin installs can also just ask Claude to "set up sidebar sync".
 
@@ -39,7 +41,7 @@ Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what 
 
 1. A small background hook wakes up every time Claude finishes a reply.
 2. Haiku skims the conversation and writes a short title, through `claude -p` on your subscription. No API key, no separate billing.
-3. As the session grows it re-checks and renames if the topic has moved on. Your own renames are left alone.
+3. As the session grows it re-checks and renames if the topic has moved on. Names you set with `rename` or `protect` are left alone.
 
 Wakeups are almost always free: the hook checks one number and exits. A model call only happens when a session is new or has grown a lot since the last check - whether the growth is your messages or agent activity - so even a very long session costs about 5 haiku calls total.
 
@@ -71,7 +73,7 @@ sidebar-setup              Set up the hourly sidebar sync
 
 **It writes to Claude Code's own session files.** Anthropic documents that format as internal, so a Claude Code update can change it. The tool only ever appends the same record type Claude Code itself writes. Worst case, titles stop appearing until this tool is patched. Sessions are never touched beyond that.
 
-**Your titles are safe.** `rename` and `protect` lock a session permanently. A name you typed in the desktop app is detected and skipped too (macOS), and the model is told to keep anything that reads like a deliberate label.
+**Your titles are safe.** `rename` and `protect` lock a session permanently, and a name you typed in the desktop app is detected and skipped too (macOS). A name set by hand outside those keeps its meaning, but it can be reshaped into the title format you configured - `protect` is how you hold one exactly as typed. The drift check is also told to keep anything that reads like a deliberate label.
 
 **Cost:** a few haiku calls per session, on your existing subscription. A default backfill covers your 50 newest sessions and takes 10-15 minutes.
 

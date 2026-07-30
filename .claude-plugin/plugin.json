@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-session-namer",
   "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "sturimcode",
     "url": "https://github.com/sturimcode"

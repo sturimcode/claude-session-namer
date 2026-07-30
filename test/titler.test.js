@@ -4,8 +4,8 @@ const os = require('node:os');
 const titler = require('../src/titler');
 
 test('buildPrompt includes title, prefixes, excerpt, and rules', () => {
-  const p = titler.buildPrompt({ currentTitle: '[Emails] SES fix', prefixes: ['Emails', 'CSA'], excerpt: 'User: hello' });
-  assert.ok(p.includes('[Emails] SES fix'));
+  const p = titler.buildPrompt({ currentTitle: '[API] Rate fix', prefixes: ['Emails', 'CSA'], excerpt: 'User: hello' });
+  assert.ok(p.includes('[API] Rate fix'));
   assert.ok(p.includes('Emails, CSA'));
   assert.ok(p.includes('User: hello'));
   assert.ok(p.includes('45'));
@@ -31,7 +31,7 @@ test('buildPrompt does not throw when prefixes and excerpt are omitted', () => {
 });
 
 test('buildPrompt only offers the KEEP-the-current-title rule when there is a current title', () => {
-  const withTitle = titler.buildPrompt({ currentTitle: '[Emails] SES fix', prefixes: [], excerpt: 'x' });
+  const withTitle = titler.buildPrompt({ currentTitle: '[API] Rate fix', prefixes: [], excerpt: 'x' });
   assert.ok(withTitle.includes('If the current title still accurately describes'));
   assert.ok(!withTitle.includes('There is no current title yet'));
 
@@ -75,15 +75,15 @@ test('buildPrompt guards low-signal excerpts and forbids preamble in both modes'
 test('buildPrompt appends an examples block matching the mode', () => {
   const on = titler.buildPrompt({ currentTitle: null, prefixes: [], excerpt: 'x' });
   assert.ok(on.includes('Examples:'));
-  assert.ok(on.includes('[Emails] SES bounce rate investigation'));
-  assert.ok(on.includes('[Client Controls] Cascade validation rules'));
+  assert.ok(on.includes('[API] Rate limiter investigation'));
+  assert.ok(on.includes('[Webapp] Signup form validation'));
   // Examples come after the rules, before the excerpt.
   assert.ok(on.indexOf('Examples:') > on.indexOf('Rules:'));
   assert.ok(on.indexOf('Examples:') < on.indexOf('Conversation excerpt:'));
 
   const off = titler.buildPrompt({ currentTitle: null, prefixes: [], excerpt: 'x', usePrefix: false });
   assert.ok(off.includes('Examples:'));
-  assert.ok(off.includes('SES bounce rate investigation'));
+  assert.ok(off.includes('Rate limiter investigation'));
   assert.ok(off.includes('Cascade validation rules'));
   assert.ok(!off.includes('[Emails]'));
   assert.ok(!off.includes('[Client Controls]'));
@@ -268,9 +268,9 @@ function fakeSpawn(result) {
 }
 
 test('runClaude spawns claude with the worker env, tmpdir cwd, timeout and piped prompt', () => {
-  const spawn = fakeSpawn({ status: 0, stdout: '[Emails] SES fix', stderr: '' });
+  const spawn = fakeSpawn({ status: 0, stdout: '[API] Rate fix', stderr: '' });
   const out = titler.runClaude('the prompt', 'haiku', spawn);
-  assert.equal(out, '[Emails] SES fix');
+  assert.equal(out, '[API] Rate fix');
   assert.equal(spawn.calls.length, 1);
   const { cmd, args, opts } = spawn.calls[0];
   assert.equal(cmd, 'claude');
@@ -345,9 +345,9 @@ test('parseResponse strips a done marker the model echoed back', () => {
 });
 
 test('the done prompt names the title, carries the excerpt, and allows two answers', () => {
-  const p = titler.buildDonePrompt({ currentTitle: '[Emails] SES fix', excerpt: 'User: thanks, that works' });
+  const p = titler.buildDonePrompt({ currentTitle: '[API] Rate fix', excerpt: 'User: thanks, that works' });
   assert.ok(p.startsWith(titler.DONE_PROMPT_SIGNATURE), p);
-  assert.ok(p.includes('[Emails] SES fix'));
+  assert.ok(p.includes('[API] Rate fix'));
   assert.ok(p.includes('User: thanks, that works'));
   assert.ok(p.includes('DONE'));
   assert.ok(p.includes('ONGOING'));

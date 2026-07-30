@@ -4,13 +4,13 @@
     "name": "sturimcode",
     "url": "https://github.com/sturimcode"
   },
-  "description": "The claude-session-namer plugin, distributed from its own repository",
+  "description": "Names Claude Code sessions more accurately and keeps the names accurate as the conversation changes.",
   "plugins": [
     {
       "name": "claude-session-namer",
       "source": "./",
-      "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
-      "version": "0.1.4",
+      "description": "Names Claude Code sessions more accurately and keeps the names accurate as the conversation changes.",
+      "version": "0.1.5",
       "author": {
         "name": "sturimcode",
         "url": "https://github.com/sturimcode"
@@ -18,7 +18,11 @@
       "homepage": "https://github.com/sturimcode/claude-session-namer",
       "license": "MIT",
       "category": "productivity",
-      "tags": ["sessions", "titles", "hooks"]
+      "tags": [
+        "sessions",
+        "titles",
+        "hooks"
+      ]
     }
   ]
 }

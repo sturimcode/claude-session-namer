@@ -189,7 +189,7 @@ test('protect locks a session against re-titling without writing a title record'
   const { commands, projectDir } = fresh();
   const id = 'aaa11111-1111-1111-1111-111111111111';
   const entries = [];
-  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about ses bounces`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
+  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about rate limits`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
   const file = fx.writeTranscript(projectDir, id, [...entries, fx.titleEntry('Revisit Monday', id)]);
   const t = require('../src/transcript');
   const before = t.readEntries(file).length;
@@ -211,7 +211,7 @@ test('unprotect puts a session back in the tool\'s hands', async () => {
   const { commands, projectDir } = fresh();
   const id = 'aaa11111-1111-1111-1111-111111111111';
   const entries = [];
-  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about ses bounces`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
+  for (let i = 0; i < 4; i++) { entries.push(fx.userEntry(`question ${i} about rate limits`)); entries.push(fx.assistantEntry(`answer ${i}`)); }
   const file = fx.writeTranscript(projectDir, id, entries);
   await capture(() => commands.protect([id]));
   const out = await capture(() => commands.unprotect([id]));
@@ -219,9 +219,9 @@ test('unprotect puts a session back in the tool\'s hands', async () => {
   const state = require('../src/state');
   assert.equal(state.load().sessions[id].manual, false);
   const { processSession } = require('../src/worker');
-  assert.equal(processSession({ sessionId: id, transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+  assert.equal(processSession({ sessionId: id, transcriptPath: file, runner: () => '[API] Rate limiter fix' }).action, 'titled');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
 });
 
 // A session the tool has never seen has no state entry - unprotecting it is a no-op, not a crash.
@@ -260,10 +260,10 @@ test('protect and unprotect refuse an ambiguous short id and report an unknown o
 
 test('list prints titles, search filters', async () => {
   const { commands, projectDir } = fresh();
-  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about ses bounces'), fx.titleEntry('[Emails] SES fix')]);
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about rate limits'), fx.titleEntry('[API] Rate fix')]);
   fx.writeTranscript(projectDir, 'bbb22222-2222-2222-2222-222222222222', [fx.userEntry('about figma')]);
   const out = await capture(() => commands.list([]));
-  assert.ok(out.includes('[Emails] SES fix'));
+  assert.ok(out.includes('[API] Rate fix'));
   assert.ok(out.includes('(untitled)'));
   const found = await capture(() => commands.search(['figma']));
   assert.ok(found.includes('bbb22222'));
@@ -274,18 +274,18 @@ test('list prints titles, search filters', async () => {
 // only way a user can see which sessions the tool has stopped touching.
 test('list marks protected sessions and leaves the rest unmarked', async () => {
   const { commands, projectDir } = fresh();
-  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about ses bounces'), fx.titleEntry('[Emails] SES fix', 'aaa11111-1111-1111-1111-111111111111')]);
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('about rate limits'), fx.titleEntry('[API] Rate fix', 'aaa11111-1111-1111-1111-111111111111')]);
   fx.writeTranscript(projectDir, 'bbb22222-2222-2222-2222-222222222222', [fx.userEntry('about figma'), fx.titleEntry('[CP] Experts tab', 'bbb22222-2222-2222-2222-222222222222')]);
   await capture(() => commands.protect(['aaa11111']));
   const lines = (await capture(() => commands.list([]))).trim().split('\n');
   const protectedLine = lines.find((l) => l.includes('aaa11111'));
   const plainLine = lines.find((l) => l.includes('bbb22222'));
-  assert.ok(protectedLine.endsWith('[Emails] SES fix [protected]'), protectedLine);
+  assert.ok(protectedLine.endsWith('[API] Rate fix [protected]'), protectedLine);
   assert.ok(plainLine.endsWith('[CP] Experts tab'), plainLine);
   // and it comes back off with unprotect
   await capture(() => commands.unprotect(['aaa11111']));
   const after = (await capture(() => commands.list([]))).trim().split('\n');
-  assert.ok(after.find((l) => l.includes('aaa11111')).endsWith('[Emails] SES fix'));
+  assert.ok(after.find((l) => l.includes('aaa11111')).endsWith('[API] Rate fix'));
 });
 
 // The desktop app records a title typed in its UI as titleSource 'user'. Those sessions are never
@@ -296,7 +296,7 @@ test('list marks sessions renamed in the desktop app', async () => {
   const auto = 'bbb22222-2222-2222-2222-222222222222';
   const unknown = 'ccc33333-3333-3333-3333-333333333333';
   const { commands, projectDir } = fresh({ [renamed]: 'user', [auto]: 'auto' });
-  fx.writeTranscript(projectDir, renamed, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', renamed)]);
+  fx.writeTranscript(projectDir, renamed, [fx.userEntry('about rate limits'), fx.titleEntry('Revisit Monday', renamed)]);
   fx.writeTranscript(projectDir, auto, [fx.userEntry('about figma'), fx.titleEntry('[CP] Experts tab', auto)]);
   fx.writeTranscript(projectDir, unknown, [fx.userEntry('about nexus'), fx.titleEntry('[Nexus] Disclaimers', unknown)]);
   const lines = (await capture(() => commands.list([]))).trim().split('\n');
@@ -310,7 +310,7 @@ test('list marks sessions renamed in the desktop app', async () => {
 test('a session both protected and renamed in the app carries both marks', async () => {
   const id = 'aaa11111-1111-1111-1111-111111111111';
   const { commands, projectDir } = fresh({ [id]: 'user' });
-  fx.writeTranscript(projectDir, id, [fx.userEntry('about ses bounces'), fx.titleEntry('Revisit Monday', id)]);
+  fx.writeTranscript(projectDir, id, [fx.userEntry('about rate limits'), fx.titleEntry('Revisit Monday', id)]);
   await capture(() => commands.protect([id]));
   const out = await capture(() => commands.list([]));
   assert.ok(out.trim().endsWith('Revisit Monday [protected] [renamed in app]'), out);
@@ -321,9 +321,9 @@ test('a session both protected and renamed in the app carries both marks', async
 test('list works with no desktop app store present', async () => {
   const { commands, projectDir } = fresh();
   noAppStore();
-  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x'), fx.titleEntry('[Emails] SES fix', 'aaa11111-1111-1111-1111-111111111111')]);
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('x'), fx.titleEntry('[API] Rate fix', 'aaa11111-1111-1111-1111-111111111111')]);
   const out = await capture(() => commands.list([]));
-  assert.ok(out.trim().endsWith('[Emails] SES fix'), out);
+  assert.ok(out.trim().endsWith('[API] Rate fix'), out);
 });
 
 test('list is newest first and caps at 50', async () => {
@@ -438,13 +438,13 @@ test('backfill accepts its own flags and their values without complaint', async 
   age(file, HOUR);
   const { out, err, code } = await exitCodeOf(() => commands.backfill(
     ['--dry-run', '--model', 'sonnet', '--project', projectDir, '--since', '60', '--limit', '10'],
-    { runner: () => '[Emails] SES bounce help' },
+    { runner: () => '[API] Rate limit help' },
   ));
   assert.equal(err, '', err);
   assert.equal(code, undefined);
-  assert.ok(out.includes('[Emails] SES bounce help'), out);
+  assert.ok(out.includes('[API] Rate limit help'), out);
 
-  const swept = await exitCodeOf(() => commands.backfill(['--all'], { runner: () => '[Emails] SES bounce help' }));
+  const swept = await exitCodeOf(() => commands.backfill(['--all'], { runner: () => '[API] Rate limit help' }));
   assert.equal(swept.err, '', swept.err);
   assert.equal(swept.code, undefined);
 });
@@ -454,22 +454,22 @@ test('backfill accepts its own flags and their values without complaint', async 
 test('list and search strip escapes from a title written outside rename', async () => {
   const { commands, projectDir } = fresh();
   fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [
-    fx.userEntry('about ses bounces'),
-    fx.titleEntry('\u001b[31m[Emails] SES fix\nsecond line'),
+    fx.userEntry('about rate limits'),
+    fx.titleEntry('\u001b[31m[API] Rate fix\nsecond line'),
   ]);
   const out = await capture(() => commands.list([]));
   assert.equal(out.trim().split('\n').length, 1, 'a title with a newline must not break the row');
-  assert.ok(out.includes('[Emails] SES fix second line'), out);
+  assert.ok(out.includes('[API] Rate fix second line'), out);
   assert.ok(!out.includes('\u001b'), 'terminal escapes must not reach the terminal');
-  const found = await capture(() => commands.search(['ses fix']));
+  const found = await capture(() => commands.search(['rate fix']));
   assert.ok(found.includes('aaa11111'), found);
   assert.ok(!found.includes('\u001b'));
 });
 
 test('search matches titles case-insensitively and reports a missing query', async () => {
   const { commands, projectDir } = fresh();
-  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('nothing relevant'), fx.titleEntry('[Emails] SES fix')]);
-  const byTitle = await capture(() => commands.search(['ses', 'fix']));
+  fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('nothing relevant'), fx.titleEntry('[API] Rate fix')]);
+  const byTitle = await capture(() => commands.search(['rate', 'fix']));
   assert.ok(byTitle.includes('aaa11111'));
   const usage = await exitCodeOf(() => commands.search([]));
   assert.match(usage.err, /Usage/i);
@@ -565,8 +565,8 @@ test('backfill dry-run titles vague sessions without writing', async () => {
   // age the file past the active-session window
   const old = new Date(Date.now() - 3600_000);
   fs.utimesSync(file, old, old);
-  const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[Emails] SES bounce help' }));
-  assert.ok(out.includes('[Emails] SES bounce help'));
+  const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[API] Rate limit help' }));
+  assert.ok(out.includes('[API] Rate limit help'));
   // A dry run still spends a model call per session - the summary has to say so.
   assert.ok(out.includes('[dry-run] 1 session(s) would be titled (each cost one model call), 0 skipped.'), out);
   const t = require('../src/transcript');
@@ -581,14 +581,14 @@ test('backfill counts and prints a restyled title', async () => {
   const file = fx.writeTranscript(projectDir, id, [
     fx.userEntry('help me with ses bounces'),
     fx.assistantEntry('sure'),
-    fx.titleEntry('SES bounce triage', id),
+    fx.titleEntry('Rate limiter fix', id),
   ]);
   age(file, HOUR);
-  const out = await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce triage' }));
-  assert.ok(out.includes('[Emails] SES bounce triage'), out);
+  const out = await capture(() => commands.backfill([], { runner: () => '[API] Rate limiter fix' }));
+  assert.ok(out.includes('[API] Rate limiter fix'), out);
   assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
 });
 
 // The point of sweeping history after flipping the setting is that titles already written converge.
@@ -604,18 +604,18 @@ test('backfill converges a titled session left out of format by a setting change
   age(file, HOUR);
 
   // the first sweep titles it and sets the baseline
-  await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce triage' }));
+  await capture(() => commands.backfill([], { runner: () => '[API] Rate limiter fix' }));
   assert.equal(state.load().sessions[id].lastCheckTurns, 1);
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
 
   // prefixes go off, so the title the sweep just wrote is the non-conforming one
   state.saveConfig({ prefix: false });
   age(file, HOUR);
   let calls = 0;
-  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return 'SES bounce triage'; } }));
+  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return 'Rate limiter fix'; } }));
   assert.equal(calls, 1);
   assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
-  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Rate limiter fix');
 
   // and the gate closes once the title conforms - a second sweep spends nothing
   age(file, HOUR);
@@ -641,7 +641,7 @@ test('backfill skips its own worker transcripts by prompt signature', async () =
   const { PROMPT_SIGNATURE } = require('../src/titler');
   const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [
     fx.userEntry(`${PROMPT_SIGNATURE}\n\nCurrent title: (none)\n\nConversation excerpt:\nUser: hi`),
-    fx.assistantEntry('[Emails] SES fix'),
+    fx.assistantEntry('[API] Rate fix'),
   ]);
   age(file, HOUR);
   const out = await capture(() => commands.backfill([], { runner: () => { throw new Error('should not be called'); } }));
@@ -681,9 +681,9 @@ test('backfill writes titles and reports no failures on a clean sweep', async ()
   const id = 'aaa11111-1111-1111-1111-111111111111';
   const file = fx.writeTranscript(projectDir, id, [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
   age(file, HOUR);
-  const out = await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce help' }));
+  const out = await capture(() => commands.backfill([], { runner: () => '[API] Rate limit help' }));
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce help');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limit help');
   assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
   assert.ok(!out.includes('failed'), out);
 });
@@ -696,14 +696,14 @@ test('backfill survives a session that throws and counts it in the summary', asy
   age(good, HOUR);
   const runner = (prompt) => {
     if (prompt.includes('boom')) throw new Error('claude exited 1');
-    return '[Emails] SES bounce help';
+    return '[API] Rate limit help';
   };
   const { out, err } = await captureBoth(() => commands.backfill([], { runner }));
-  assert.ok(out.includes('[Emails] SES bounce help'), out);
+  assert.ok(out.includes('[API] Rate limit help'), out);
   assert.ok(out.includes('1 session(s) titled, 0 skipped, 1 failed.'), out);
   assert.match(err, /aaa11111/);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(good)), '[Emails] SES bounce help');
+  assert.equal(t.currentTitle(t.readEntries(good)), '[API] Rate limit help');
 });
 
 test('backfill limits the sweep to one project dir', async () => {
@@ -714,7 +714,7 @@ test('backfill limits the sweep to one project dir', async () => {
   const theirs = fx.writeTranscript(other, 'bbb22222-2222-2222-2222-222222222222', [fx.userEntry('something else'), fx.assistantEntry('ok')]);
   age(mine, HOUR);
   age(theirs, HOUR);
-  const out = await capture(() => commands.backfill(['--project', projectDir], { runner: () => '[Emails] SES bounce help' }));
+  const out = await capture(() => commands.backfill(['--project', projectDir], { runner: () => '[API] Rate limit help' }));
   assert.ok(out.includes('aaa11111'), out);
   assert.ok(!out.includes('bbb22222'), out);
   const t = require('../src/transcript');
@@ -726,7 +726,7 @@ test('backfill passes the requested model through to the runner', async () => {
   const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
   age(file, HOUR);
   const seen = [];
-  await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
+  await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[API] Rate limit help'; } }));
   assert.deepEqual(seen, ['sonnet']);
 });
 
@@ -739,7 +739,7 @@ test('backfill with no --model uses the configured model', async () => {
   const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
   age(file, HOUR);
   const seen = [];
-  await capture(() => commands.backfill([], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
+  await capture(() => commands.backfill([], { runner: (_p, model) => { seen.push(model); return '[API] Rate limit help'; } }));
   assert.deepEqual(seen, ['sonnet']);
 });
 
@@ -753,11 +753,11 @@ test('backfill by default leaves a session older than the 30-day window alone', 
   const { commands, projectDir } = fresh();
   const recent = agedSession(projectDir, 1, HOUR);
   const old = agedSession(projectDir, 2, 40 * DAY);
-  const out = await capture(() => commands.backfill([], { runner: () => '[Emails] SES bounce help' }));
+  const out = await capture(() => commands.backfill([], { runner: () => '[API] Rate limit help' }));
   assert.ok(out.includes(recent.short), out);
   assert.ok(!out.includes(old.short), out);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(recent.file)), '[Emails] SES bounce help');
+  assert.equal(t.currentTitle(t.readEntries(recent.file)), '[API] Rate limit help');
   assert.equal(t.currentTitle(t.readEntries(old.file)), null);
   // Out-of-scope sessions are not "skipped" - they were never candidates.
   assert.ok(out.includes('1 session(s) titled, 0 skipped.'), out);
@@ -769,7 +769,7 @@ test('backfill by default stops at the 50 newest sessions in the window', async 
   for (let i = 0; i < 51; i++) made.push(agedSession(projectDir, i, HOUR + i * 60_000));
   const oldest = made[50];
   let calls = 0;
-  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  const out = await capture(() => commands.backfill([], { runner: () => { calls++; return '[API] Rate limit help'; } }));
   assert.equal(calls, 50);
   assert.ok(out.includes('50 session(s) titled, 0 skipped.'), out);
   assert.ok(!out.includes(oldest.short), out);
@@ -780,10 +780,10 @@ test('backfill by default stops at the 50 newest sessions in the window', async 
 test('backfill --since widens the window and keeps the 50 cap', async () => {
   const { commands, projectDir } = fresh();
   const old = agedSession(projectDir, 2, 40 * DAY);
-  const out = await capture(() => commands.backfill(['--since', '90'], { runner: () => '[Emails] SES bounce help' }));
+  const out = await capture(() => commands.backfill(['--since', '90'], { runner: () => '[API] Rate limit help' }));
   assert.ok(out.includes(old.short), out);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(old.file)), '[Emails] SES bounce help');
+  assert.equal(t.currentTitle(t.readEntries(old.file)), '[API] Rate limit help');
   assert.ok(out.includes('from the last 90 days'), out);
 });
 
@@ -791,7 +791,7 @@ test('backfill --limit overrides the cap', async () => {
   const { commands, projectDir } = fresh();
   for (let i = 0; i < 12; i++) agedSession(projectDir, i, HOUR + i * 60_000);
   let calls = 0;
-  const out = await capture(() => commands.backfill(['--limit', '5'], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  const out = await capture(() => commands.backfill(['--limit', '5'], { runner: () => { calls++; return '[API] Rate limit help'; } }));
   assert.equal(calls, 5);
   assert.ok(out.includes('5 session(s) titled, 0 skipped.'), out);
   assert.ok(out.includes('Scanned the 5 newest sessions'), out);
@@ -802,7 +802,7 @@ test('backfill --all sweeps the whole history with no window and no cap', async 
   const old = agedSession(projectDir, 900, 40 * DAY);
   for (let i = 0; i < 51; i++) agedSession(projectDir, i, HOUR + i * 60_000);
   let calls = 0;
-  const out = await capture(() => commands.backfill(['--all'], { runner: () => { calls++; return '[Emails] SES bounce help'; } }));
+  const out = await capture(() => commands.backfill(['--all'], { runner: () => { calls++; return '[API] Rate limit help'; } }));
   assert.equal(calls, 52);
   assert.ok(out.includes(old.short), out);
   // The scope note is a nudge toward --all, so it has no business in an --all run.
@@ -812,7 +812,7 @@ test('backfill --all sweeps the whole history with no window and no cap', async 
 test('backfill prints the scope it actually scanned before the summary', async () => {
   const { commands, projectDir } = fresh();
   agedSession(projectDir, 1, HOUR);
-  const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[Emails] SES bounce help' }));
+  const out = await capture(() => commands.backfill(['--dry-run'], { runner: () => '[API] Rate limit help' }));
   const lines = out.trim().split('\n');
   assert.equal(lines[lines.length - 2], 'Scanned the 1 newest session from the last 30 days (use --all for full history).');
   assert.match(lines[lines.length - 1], /^\[dry-run\]/);
@@ -858,10 +858,10 @@ const jsonLines = (out) => out.trim().split('\n').filter(Boolean).map((l) => JSO
 
 test('sync-plan emits a diff for a session the app titled itself', async () => {
   const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: 'New session', titleSource: 'auto' } });
-  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[API] Rate limiter fix', AUTO)]);
   const out = await capture(() => commands['sync-plan']([]));
   assert.deepEqual(jsonLines(out), [
-    { sessionId: 'local_aaa', currentTitle: 'New session', newTitle: '[Emails] SES bounce triage' },
+    { sessionId: 'local_aaa', currentTitle: 'New session', newTitle: '[API] Rate limiter fix' },
   ]);
 });
 
@@ -873,7 +873,7 @@ test('sync-plan excludes user-renamed sessions unless --all is passed', async ()
     [USER]: { sessionId: 'local_bbb', title: 'Revisit Monday', titleSource: 'user' },
   };
   const { commands, projectDir } = fresh(store);
-  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[API] Rate limiter fix', AUTO)]);
   fx.writeTranscript(projectDir, USER, [fx.userEntry('what did we decide on aliases'), fx.titleEntry('[Emails] Alias domain split', USER)]);
 
   const plain = jsonLines(await capture(() => commands['sync-plan']([])));
@@ -908,11 +908,11 @@ test('sync-plan skips matching titles, vague titles, and sessions with no transc
   const vague = 'ddd44444-4444-4444-4444-444444444444';
   const gone = 'eee55555-5555-5555-5555-555555555555';
   const { commands, projectDir } = fresh({
-    [same]: { sessionId: 'local_ccc', title: '[Emails] SES bounce triage', titleSource: 'auto' },
+    [same]: { sessionId: 'local_ccc', title: '[API] Rate limiter fix', titleSource: 'auto' },
     [vague]: { sessionId: 'local_ddd', title: 'Something else', titleSource: 'auto' },
     [gone]: { sessionId: 'local_eee', title: 'Whatever', titleSource: 'auto' },
   });
-  fx.writeTranscript(projectDir, same, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', same)]);
+  fx.writeTranscript(projectDir, same, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[API] Rate limiter fix', same)]);
   fx.writeTranscript(projectDir, vague, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('New session', vague)]);
   // `gone` has a store record but no transcript on this machine at all
   const { out, code } = await exitCodeOf(() => commands['sync-plan']([]));
@@ -931,7 +931,7 @@ test('sync-plan skips a session with no title in the transcript', async () => {
 test('sync-plan prints nothing with no desktop app store present', async () => {
   const { commands, projectDir } = fresh();
   noAppStore();
-  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[Emails] SES bounce triage', AUTO)]);
+  fx.writeTranscript(projectDir, AUTO, [fx.userEntry('why are ses bounces climbing'), fx.titleEntry('[API] Rate limiter fix', AUTO)]);
   assert.equal(await capture(() => commands['sync-plan']([])), '');
 });
 
@@ -979,8 +979,8 @@ function pushIntoStore(cliSessionId, title) {
   }
 }
 
-const OURS = '[Emails] SES bounce triage';
-const APP = 'Investigating email delivery';
+const OURS = '[API] Rate limiter fix';
+const APP = 'Investigating rate limits';
 
 test('sync-plan proposes our title again when the app displaced it with its own registry title', async () => {
   const { commands, projectDir } = fresh({ [AUTO]: { sessionId: 'local_aaa', title: APP, titleSource: 'auto' } });
@@ -1077,7 +1077,7 @@ const enableDoneMarker = () => {
 // A session this tool titled and nobody has touched for hours - the one shape the done sweep acts
 // on. State is written the way the worker writes it, so no test here leans on the sweep's own
 // bookkeeping to set itself up.
-function titledIdle(projectDir, n, { title = '[Emails] SES bounce triage', idleMs = 3 * HOUR } = {}) {
+function titledIdle(projectDir, n, { title = '[API] Rate limiter fix', idleMs = 3 * HOUR } = {}) {
   const id = `${String(n).padStart(8, '0')}-1111-1111-1111-111111111111`;
   const entries = [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure'), fx.titleEntry(title, id)];
   const file = fx.writeTranscript(projectDir, id, entries);
@@ -1141,18 +1141,18 @@ test('sweep-done marks a session whose work has stopped', async () => {
   let prompt = '';
   const out = await capture(() => commands['sweep-done']([], { runner: (p) => { calls++; prompt = p; return 'DONE'; } }));
   assert.equal(calls, 1);
-  assert.ok(out.includes('✓ [Emails] SES bounce triage'), out);
+  assert.ok(out.includes('✓ [API] Rate limiter fix'), out);
   assert.ok(out.includes('1 session(s) marked done, 0 skipped.'), out);
   assert.ok(out.includes('Scanned the 1 newest session from the last 30 days.'), out);
 
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [API] Rate limiter fix');
   // the title is not regenerated - the sweep judges whether the work stopped, nothing else
   assert.ok(prompt.includes(s.title), prompt);
 
   const sess = require('../src/state').load().sessions[s.id];
   assert.equal(sess.done, true);
-  assert.deepEqual(sess.written, [s.title, '✓ [Emails] SES bounce triage']);
+  assert.deepEqual(sess.written, [s.title, '✓ [API] Rate limiter fix']);
   // the checkpoint counts the record the sweep itself wrote, or the worker would read our own
   // append as the session picking up again and strip the marker straight back off
   assert.equal(sess.doneCheckedRecords, t.readEntries(s.file).length);
@@ -1192,7 +1192,7 @@ test('sweep-done never re-judges a session it already marked', async () => {
   }));
   assert.ok(out.includes('0 session(s) marked done, 1 skipped.'), out);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [API] Rate limiter fix');
 });
 
 // Ten minutes of quiet only says nobody is mid-reply. This asks a model whether the work is over, so
@@ -1210,7 +1210,7 @@ test('sweep-done leaves a session touched in the last two hours alone', async ()
   const cold = await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
   assert.ok(cold.includes('1 session(s) marked done, 1 skipped.'), cold);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [API] Rate limiter fix');
 });
 
 // Nothing here is a new protection - it is the existing ones, plus the one rule of its own: a title
@@ -1247,7 +1247,7 @@ test('sweep-done --dry-run writes nothing anywhere', async () => {
   enableDoneMarker();
   const s = titledIdle(projectDir, 1);
   const out = await capture(() => commands['sweep-done'](['--dry-run'], { runner: () => 'DONE' }));
-  assert.ok(out.includes('✓ [Emails] SES bounce triage'), out);
+  assert.ok(out.includes('✓ [API] Rate limiter fix'), out);
   assert.ok(out.includes('[dry-run] 1 session(s) would be marked done (each cost one model call), 0 skipped.'), out);
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(s.file)), s.title);
@@ -1295,7 +1295,7 @@ test('sync-plan pushes a marked title and converges on it', async () => {
   const { commands, projectDir } = fresh({ [id]: { titleSource: 'auto', title: 'App auto name', sessionId: 'daemon-1' } });
   enableDoneMarker();
   const s = titledIdle(projectDir, 1);
-  const marked = '✓ [Emails] SES bounce triage';
+  const marked = '✓ [API] Rate limiter fix';
   await capture(() => commands['sweep-done']([], { runner: () => 'DONE' }));
 
   const plain = await capture(() => commands['sync-plan']([]));
@@ -1342,5 +1342,5 @@ test('sweep-done survives a judgment that throws and counts it in the summary', 
   assert.ok(out.includes('1 session(s) marked done, 0 skipped, 1 failed.'), out);
   assert.match(err, /failed: claude exited 1/);
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(good.file)), '✓ [Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(good.file)), '✓ [API] Rate limiter fix');
 });

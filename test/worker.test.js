@@ -27,10 +27,10 @@ const agentic = (turns, toolRecords) => [...chat(turns), ...Array.from({ length:
 test('titles a fresh session after first exchange', () => {
   const { worker, projectDir } = setup();
   const file = fx.writeTranscript(projectDir, 's1', chat(1));
-  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES bounce triage' });
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[API] Rate limiter fix' });
   assert.equal(res.action, 'titled');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
 });
 
 test('no-check-needed inside growth gate; rechecks at 2x growth', () => {
@@ -89,15 +89,15 @@ test('the app-rename marker holds on an untitled session and at high growth', ()
 test('an app auto-titled session is titled and drift-tracked as usual', () => {
   const { worker, projectDir } = setup({ s1: 'auto' });
   const file = fx.writeTranscript(projectDir, 's1', chat(1));
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[API] Rate limiter fix' }).action, 'titled');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
 });
 
 test('a session the app store has never heard of is titled as usual', () => {
   const { worker, projectDir } = setup({ 'some-other-session': 'user' });
   const file = fx.writeTranscript(projectDir, 's1', chat(1));
-  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES bounce triage' }).action, 'titled');
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[API] Rate limiter fix' }).action, 'titled');
 });
 
 // Protection set in our own state is checked first and reported as its own action - a session can
@@ -124,10 +124,10 @@ test('a foreign custom-title is drift-tracked, not manual-locked', () => {
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
   // at 2x growth it gets re-checked like any other title, and a drifted session is re-titled
   const file2 = fx.writeTranscript(projectDir, 's1', [...chat(6), fx.titleEntry('[Spending] Analysis review')]);
-  const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[Emails] SES bounce triage' });
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file2, runner: () => '[API] Rate limiter fix' });
   assert.equal(res.action, 'titled');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file2)), '[API] Rate limiter fix');
 });
 
 test('our own title, read back as a custom-title, still drift-rechecks', () => {
@@ -485,10 +485,10 @@ test('an ai-title re-asserted as an identical custom-title mid-generate is not a
   const runner = () => {
     // the app re-asserts the same title it already showed, this time as a custom-title record
     t.appendTitleRecord(file2, 's1', '[Spending] Analysis review');
-    return '[Emails] SES bounce triage';
+    return '[API] Rate limiter fix';
   };
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file2, runner }).action, 'titled');
-  assert.equal(t.currentTitle(t.readEntries(file2)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file2)), '[API] Rate limiter fix');
 });
 
 // The kept title is what the session is left with. A title that reads vague is not one, even when
@@ -508,31 +508,31 @@ test('a KEEP on a vague-but-present title reports no title', () => {
 // rather than re-derived from scratch.
 test('prefix on: an accurate title with no prefix is restyled rather than left alone', () => {
   const { worker, state, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Rate limiter fix')]);
   let prompt = '';
   const res = worker.processSession({
     sessionId: 's1',
     transcriptPath: file,
-    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+    runner: (p) => { prompt = p; return '[API] Rate limiter fix'; },
   });
   assert.equal(res.action, 'restyled');
-  assert.equal(res.title, '[Emails] SES bounce triage');
+  assert.equal(res.title, '[API] Rate limiter fix');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
   // the reformat prompt, not the drift prompt
   assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
   assert.ok(!prompt.includes('If the current title still accurately describes'));
   // written the same crash-safe way a first title is: claimed in state, baseline set, prefix counted
   const after = state.load();
-  assert.deepEqual(after.sessions.s1.written, ['[Emails] SES bounce triage']);
+  assert.deepEqual(after.sessions.s1.written, ['[API] Rate limiter fix']);
   assert.equal(after.sessions.s1.lastCheckTurns, 2);
   assert.equal(after.sessions.s1.manual, false);
-  assert.deepEqual(after.prefixes, { Emails: 1 });
+  assert.deepEqual(after.prefixes, { API: 1 });
 });
 
 test('a title already in the configured format costs no model call', () => {
   const { worker, state, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[API] Rate limiter fix')]);
   const res = worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => { throw new Error('should not call'); } });
   assert.equal(res.action, 'no-check-needed');
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
@@ -542,23 +542,23 @@ test('a title already in the configured format costs no model call', () => {
 test('prefix off: a prefixed title is restyled down to a bare phrase', () => {
   const { worker, state, projectDir } = setup();
   state.saveConfig({ prefix: false });
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[API] Rate limiter fix')]);
   let prompt = '';
   const res = worker.processSession({
     sessionId: 's1',
     transcriptPath: file,
-    runner: (p) => { prompt = p; return 'SES bounce triage'; },
+    runner: (p) => { prompt = p; return 'Rate limiter fix'; },
   });
   assert.equal(res.action, 'restyled');
-  assert.equal(res.title, 'SES bounce triage');
+  assert.equal(res.title, 'Rate limiter fix');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Rate limiter fix');
   assert.ok(prompt.includes('- Drop the prefix and keep the phrase as it is'));
   // stripping a prefix is mechanical, so the prompt spends nothing on the conversation
   assert.ok(!prompt.includes('Conversation excerpt'));
   assert.ok(!prompt.includes('question 0 about SES bounces'));
   // and a bare title under the same setting is the conforming one
-  const file2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
+  const file2 = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('Rate limiter fix', 's2')]);
   assert.equal(
     worker.processSession({ sessionId: 's2', transcriptPath: file2, runner: () => { throw new Error('should not call'); } }).action,
     'no-check-needed',
@@ -607,22 +607,22 @@ test('an unmarked personal label in the wrong format is reformatted, not spared'
 // disobeys. Recording the baseline is what stops that from re-asking on every Stop event.
 test('a restyle the model answers KEEP to keeps the title and waits for growth', () => {
   const { worker, state, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Rate limiter fix')]);
   let calls = 0;
   const keep = () => { calls++; return 'KEEP'; };
   assert.deepEqual(
     worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep }),
-    { action: 'kept', title: 'SES bounce triage' },
+    { action: 'kept', title: 'Rate limiter fix' },
   );
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
   // repeated events at the same turn count don't re-ask
   for (let i = 0; i < 3; i++) worker.processSession({ sessionId: 's1', transcriptPath: file, runner: keep });
   assert.equal(calls, 1);
   // the growth cadence owns the next look, and a model that obeys converges the title
-  const grown = fx.writeTranscript(projectDir, 's1', [...chat(4), fx.titleEntry('SES bounce triage')]);
-  const res = worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: () => '[Emails] SES bounce triage' });
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(4), fx.titleEntry('Rate limiter fix')]);
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: () => '[API] Rate limiter fix' });
   assert.equal(res.action, 'restyled');
-  assert.equal(require('../src/transcript').currentTitle(require('../src/transcript').readEntries(grown)), '[Emails] SES bounce triage');
+  assert.equal(require('../src/transcript').currentTitle(require('../src/transcript').readEntries(grown)), '[API] Rate limiter fix');
 });
 
 // A drift check can answer KEEP, and a KEEP on a non-conforming title would leave the format wrong
@@ -634,12 +634,12 @@ test('a wrong-format title is restyled even when a drift check is due', () => {
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner: () => '[Emails] SES triage' }).action, 'titled');
   assert.equal(state.load().sessions.s1.lastCheckTurns, 10);
   // the session's name is a bare phrase now - the app's own, or ours from before prefixes were on
-  file = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('SES bounce triage')]);
+  file = fx.writeTranscript(projectDir, 's1', [...chat(20), fx.titleEntry('Rate limiter fix')]);
   let prompt = '';
   const res = worker.processSession({
     sessionId: 's1',
     transcriptPath: file,
-    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+    runner: (p) => { prompt = p; return '[API] Rate limiter fix'; },
   });
   assert.equal(res.action, 'restyled');
   assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
@@ -656,20 +656,20 @@ test('force opens the reformat gate on a baselined session and nothing else', ()
   const mustNotCall = () => { throw new Error('must not call the model'); };
 
   // a conforming title with a baseline - force is not a licence to re-run the drift check
-  const conforming = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[Emails] SES bounce triage')]);
+  const conforming = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('[API] Rate limiter fix')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
   assert.equal(state.load().sessions.s1.lastCheckTurns, 2);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: conforming, force: true, runner: mustNotCall }).action, 'no-check-needed');
 
   // a non-conforming title sitting at its own baseline: gated out unforced, converges forced
-  const file = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('SES bounce triage', 's2')]);
+  const file = fx.writeTranscript(projectDir, 's2', [...chat(2), fx.titleEntry('Rate limiter fix', 's2')]);
   const s = state.load();
   state.session(s, 's2').lastCheckTurns = 2;
   state.save(s);
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, runner: mustNotCall }).action, 'no-check-needed');
-  const res = worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: () => '[Emails] SES bounce triage' });
+  const res = worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: () => '[API] Rate limiter fix' });
   assert.equal(res.action, 'restyled');
-  assert.equal(t.currentTitle(t.readEntries(file)), '[Emails] SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '[API] Rate limiter fix');
   // and the gate closes on the title it just wrote - a second forced look costs nothing
   assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file, force: true, runner: mustNotCall }).action, 'no-check-needed');
 });
@@ -763,15 +763,15 @@ test('a KEEP on a record-growth check moves the record baseline', () => {
 // this drifted", so the record trigger opens the reformat check the same way the turn gate does.
 test('a record-growth look at a wrong-format title restyles first', () => {
   const { worker, state, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 100), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...agentic(2, 100), fx.titleEntry('Rate limiter fix')]);
   const s = state.load();
-  Object.assign(state.session(s, 's1'), { lastCheckTurns: 2, lastCheckRecords: 4, written: ['SES bounce triage'] });
+  Object.assign(state.session(s, 's1'), { lastCheckTurns: 2, lastCheckRecords: 4, written: ['Rate limiter fix'] });
   state.save(s);
   let prompt = '';
   const res = worker.processSession({
     sessionId: 's1',
     transcriptPath: file,
-    runner: (p) => { prompt = p; return '[Emails] SES bounce triage'; },
+    runner: (p) => { prompt = p; return '[API] Rate limiter fix'; },
   });
   assert.equal(res.action, 'restyled');
   assert.ok(prompt.includes('rewrite it into the required format, preserving its meaning'));
@@ -795,17 +795,17 @@ test('a vague title takes the first-title path, whatever format it is in', () =>
 
 test('a dry-run restyle reports the title it would write and writes nothing', () => {
   const { worker, projectDir } = setup();
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Rate limiter fix')]);
   const res = worker.processSession({
     sessionId: 's1',
     transcriptPath: file,
     dryRun: true,
-    runner: () => '[Emails] SES bounce triage',
+    runner: () => '[API] Rate limiter fix',
   });
   assert.equal(res.action, 'dry-run');
-  assert.equal(res.title, '[Emails] SES bounce triage');
+  assert.equal(res.title, '[API] Rate limiter fix');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), 'SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Rate limiter fix');
   assert.equal(require('node:fs').existsSync(require('../src/paths').stateFile()), false);
 });
 
@@ -813,14 +813,14 @@ test('a dry-run restyle reports the title it would write and writes nothing', ()
 test('a rename that lands mid-restyle is not clobbered by the reformatted title', () => {
   const { worker, state, projectDir } = setup();
   const t = require('../src/transcript');
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Rate limiter fix')]);
   const runner = () => {
     t.appendTitleRecord(file, 's1', 'My hand-written name');
     const other = state.load();
     state.recordTitle(other, 's1', 'My hand-written name', 2);
     state.session(other, 's1').manual = true;
     state.save(other);
-    return '[Emails] SES bounce triage';
+    return '[API] Rate limiter fix';
   };
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'manual-skip');
   assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
@@ -832,7 +832,7 @@ test('a rename that lands mid-restyle is not clobbered by the reformatted title'
 test('the worker titles with the configured model', () => {
   const { worker, state, projectDir } = setup();
   const seen = [];
-  const runner = (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; };
+  const runner = (_p, model) => { seen.push(model); return '[API] Rate limiter fix'; };
 
   const file = fx.writeTranscript(projectDir, 's1', chat(1));
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'titled');
@@ -850,13 +850,13 @@ test('drift and restyle calls use the configured model too', () => {
   const { worker, state, projectDir } = setup();
   state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
   const seen = [];
-  const runner = (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; };
+  const runner = (_p, model) => { seen.push(model); return '[API] Rate limiter fix'; };
 
   // restyle: a non-conforming title with prefixes on
-  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('Rate limiter fix')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'restyled');
   // drift: the same session doubled past its new baseline
-  const grown = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry('[Emails] SES bounce triage')]);
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry('[API] Rate limiter fix')]);
   assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: (p, m) => { seen.push(m); return 'KEEP'; } }).action, 'kept');
   assert.deepEqual(seen, ['sonnet', 'sonnet']);
 });
@@ -872,7 +872,7 @@ test('an explicit model argument overrides the configured one', () => {
     sessionId: 's1',
     transcriptPath: file,
     model: 'opus',
-    runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; },
+    runner: (_p, model) => { seen.push(model); return '[API] Rate limiter fix'; },
   });
   assert.deepEqual(seen, ['opus']);
 });
@@ -932,7 +932,7 @@ function markedSession(state, id, core, records) {
 // re-deriving something already known.
 test('a resumed session loses its done marker without a model call', () => {
   const { worker, state, projectDir } = setup();
-  const core = '[Emails] SES bounce triage';
+  const core = '[API] Rate limiter fix';
   const marked = `✓ ${core}`;
   const before = [...chat(2), fx.titleEntry(marked)];
   markedSession(state, 's1', core, before.length);
@@ -956,7 +956,7 @@ test('a resumed session loses its done marker without a model call', () => {
 // nobody has touched costs exactly what any other quiet session costs.
 test('a marked session that has not grown keeps its marker and costs nothing', () => {
   const { worker, state, projectDir } = setup();
-  const core = '[Emails] SES bounce triage';
+  const core = '[API] Rate limiter fix';
   const marked = `✓ ${core}`;
   const entries = [...chat(2), fx.titleEntry(marked)];
   markedSession(state, 's1', core, entries.length);
@@ -975,7 +975,7 @@ test('a marked session that has not grown keeps its marker and costs nothing', (
 // the marker survives it. The model never sees the marker and never gets to decide.
 test('a restyle of a marked title keeps the marker and never shows it to the model', () => {
   const { worker, state, projectDir } = setup();
-  const core = '[Emails] SES bounce triage';
+  const core = '[API] Rate limiter fix';
   const marked = `✓ ${core}`;
   const entries = [...chat(2), fx.titleEntry(marked)];
   markedSession(state, 's1', core, entries.length);
@@ -985,18 +985,18 @@ test('a restyle of a marked title keeps the marker and never shows it to the mod
   let prompt = '';
   const res = worker.processSession({
     sessionId: 's1', transcriptPath: file, force: true,
-    runner: (p) => { prompt = p; return 'SES bounce triage'; },
+    runner: (p) => { prompt = p; return 'Rate limiter fix'; },
   });
   assert.equal(res.action, 'restyled');
-  assert.equal(res.title, '✓ SES bounce triage');
+  assert.equal(res.title, '✓ Rate limiter fix');
   const t = require('../src/transcript');
-  assert.equal(t.currentTitle(t.readEntries(file)), '✓ SES bounce triage');
+  assert.equal(t.currentTitle(t.readEntries(file)), '✓ Rate limiter fix');
   assert.ok(!prompt.includes('✓'), 'the marker must never reach the prompt');
   assert.ok(prompt.includes(`Current title: ${core}`), prompt);
   // both strings are claimed, so neither reads as a stranger's write later
   const written = state.load().sessions.s1.written;
-  assert.ok(written.includes('✓ SES bounce triage'), written.join(' | '));
-  assert.ok(written.includes('SES bounce triage'), written.join(' | '));
+  assert.ok(written.includes('✓ Rate limiter fix'), written.join(' | '));
+  assert.ok(written.includes('Rate limiter fix'), written.join(' | '));
   assert.equal(state.load().sessions.s1.done, true);
 });
 

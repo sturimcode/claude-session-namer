@@ -11,12 +11,12 @@ const MIN_WORD_CUT_INDEX = 20;
 const PROMPT_SIGNATURE = 'You title chat sessions between a developer and a coding assistant.';
 
 const USE_PREFIX_EXAMPLES = [
-  '[Emails] SES bounce rate investigation',
-  '[Client Controls] Cascade validation rules',
+  '[API] Rate limiter investigation',
+  '[Webapp] Signup form validation',
   'KEEP',
 ];
 const BARE_PHRASE_EXAMPLES = [
-  'SES bounce rate investigation',
+  'Rate limiter investigation',
   'Cascade validation rules',
   'KEEP',
 ];

@@ -1,8 +1,12 @@
 # claude-session-namer
 
-Automatically names your Claude Code sessions, and renames them when the conversation becomes something else.
+Keeps your Claude Code session names right - from first reply to last.
 
-Claude Code names sessions on its own, but the names are vague ("New session", "General coding session") and stay wrong once the work moves on. This fixes that: clear names, kept current, bucketed by project.
+Claude Code names each session once, early, with barely any context. The guesses are wrong as often as not, and they never change - a session that starts as a config question and becomes a three-hour refactor keeps its config-question name forever. A sidebar like that makes you open sessions just to find out what they are.
+
+This tool names a session once there's something real to name, re-reads it as the work grows, and renames it when the name has stopped being true. It can also group sessions by project (`[API] Rate limiter fix`) and put a checkmark on sessions whose work is finished - both optional. The sidebar ends up readable at a glance: what each session is, which project it belongs to, whether anything in it is still open.
+
+Names you set yourself are never touched.
 
 ## Install
 
@@ -39,7 +43,7 @@ Desktop app user? Run `claude-session-namer sidebar-setup` once and follow what 
 
 Wakeups are almost always free: the hook checks one number and exits. A model call only happens when a session is new or has grown a lot since the last check - whether the growth is your messages or agent activity - so even a very long session costs about 5 haiku calls total.
 
-Titles look like `[Emails] SES bounce triage`. Prefixes are reused across sessions, so related work clusters in the sidebar. Prefer bare phrases? `claude-session-namer config prefix off`.
+Titles look like `[API] Rate limiter fix`. Prefixes are reused across sessions, so related work clusters in the sidebar. Prefer bare phrases? `claude-session-namer config prefix off`.
 
 Haiku writes the titles by default, and for an eight-word phrase it is plenty. `claude-session-namer config model sonnet` switches if you want a sharper read of a messy conversation; a sonnet call costs about 3x a haiku one.
 

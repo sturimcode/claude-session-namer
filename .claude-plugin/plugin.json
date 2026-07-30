@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-session-namer",
-  "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
-  "version": "0.1.4",
+  "description": "Names Claude Code sessions more accurately and keeps the names accurate as the conversation changes.",
+  "version": "0.1.5",
   "author": {
     "name": "sturimcode",
     "url": "https://github.com/sturimcode"
@@ -10,5 +10,11 @@
   "homepage": "https://github.com/sturimcode/claude-session-namer",
   "repository": "https://github.com/sturimcode/claude-session-namer",
   "license": "MIT",
-  "keywords": ["claude-code", "sessions", "titles", "hooks", "productivity"]
+  "keywords": [
+    "claude-code",
+    "sessions",
+    "titles",
+    "hooks",
+    "productivity"
+  ]
 }

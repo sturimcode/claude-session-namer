@@ -10,7 +10,7 @@
       "name": "claude-session-namer",
       "source": "./",
       "description": "Auto-title Claude Code sessions - and re-title them when the conversation drifts",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "author": {
         "name": "sturimcode",
         "url": "https://github.com/sturimcode"

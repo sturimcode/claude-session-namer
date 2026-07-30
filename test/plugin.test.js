@@ -51,6 +51,21 @@ test('the Stop hook runs the real cli entry through the plugin root', () => {
   assert.ok(fs.existsSync(path.join(root, referenced[1])), `${referenced[1]} does not exist`);
 });
 
+test('the plugin Stop hook pins its shell, so Windows never hands the command to PowerShell', () => {
+  const entry = readJson('hooks/hooks.json').hooks.Stop[0].hooks[0];
+  // A shell-form hook command runs under sh on macOS and Linux, Git Bash on Windows, and PowerShell
+  // when Git Bash is missing. This command is POSIX throughout - `command -v`, `>/dev/null`, `||`,
+  // `exec` - and PowerShell fails to parse it, which would put an error on screen after every single
+  // Stop event in a tool whose whole contract is silence when it cannot run. Pinning the shell keeps
+  // it out of PowerShell; a Windows box with no bash simply never starts the hook, which is the
+  // intended non-support rather than a half-working install.
+  assert.equal(entry.shell, 'bash');
+  // Exec form would also dodge PowerShell, at the cost of the `command -v node` guard: with no shell
+  // there is nothing to check node with, and a missing node becomes a spawn failure per Stop event
+  // on macOS and Linux, which is the noise the guard was written to avoid.
+  assert.equal('args' in entry, false);
+});
+
 test('the plugin hook timeout matches the one the npm install registers', () => {
   const pluginTimeout = readJson('hooks/hooks.json').hooks.Stop[0].hooks[0].timeout;
   // Read it off the installer rather than restating 15 here: the two install paths have to agree,

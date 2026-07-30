@@ -68,7 +68,7 @@ sidebar-setup              Set up the hourly sidebar sync
 
 **Cost:** a few haiku calls per session, on your existing subscription. A default backfill covers your 50 newest sessions and takes 10-15 minutes.
 
-**Requirements:** Node 18+, the `claude` CLI signed in, macOS or Linux. If titling silently does nothing: run `claude -p ping --model haiku` to check the CLI, and make sure `CLAUDE_SESSION_NAMER_WORKER` isn't exported in your shell.
+**Requirements:** Node 18+, the `claude` CLI signed in, macOS or Linux. On Windows, `claude-session-namer install` refuses and installs nothing rather than registering a hook that could never fire. If titling silently does nothing: run `claude -p ping --model haiku` to check the CLI, and make sure `CLAUDE_SESSION_NAMER_WORKER` isn't exported in your shell.
 
 Full design, every protection rule, and the sidebar mechanics: [docs/design.md](docs/design.md).
 

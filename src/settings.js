@@ -235,9 +235,30 @@ function askTty(question) {
   }
 }
 
-// testOpts carries the process-boundary seams only - the probe's spawn and the question's reader,
-// the way backfill takes a runner. Nothing else may set it.
+// The hook this installs is a /bin/sh script, and there is no Windows equivalent yet. Installing
+// anyway would leave settings.json saying titling is on while no title ever appears, because the
+// hook is silent on every failure path by design - the exact failure the probe below exists to
+// expose, one step earlier and total. So install refuses, and says which of the two it is: a tool
+// that does not support the platform, not a tool that broke on it.
+const WINDOWS_REFUSAL = [
+  'Windows is not supported yet. Nothing was installed.',
+  'The Stop hook is a POSIX shell script, so titling would never run and would never say so.',
+  'Watch https://github.com/sturimcode/claude-session-namer for Windows support.',
+  '',
+].join('\n');
+
+// testOpts carries the process-boundary seams only - the probe's spawn, the question's reader, and
+// the platform, the way backfill takes a runner. Nothing else may set it.
 function install(argv = [], testOpts = {}) {
+  // First, ahead of the flag check and every write: below this line the command reads settings,
+  // creates directories and writes the wrapper, and none of that should happen on a platform where
+  // the result cannot run. uninstall takes no such guard - it only removes things, and a user who
+  // installed on macOS and reads this repo on Windows still deserves a working removal.
+  if ((testOpts.platform || process.platform) === 'win32') {
+    process.stderr.write(WINDOWS_REFUSAL);
+    process.exitCode = 1;
+    return;
+  }
   // A typo'd flag must not read as a plain install - the user would think --no-prefix took effect.
   const unknown = argv.filter((a) => a !== '--no-prefix');
   if (unknown.length) {

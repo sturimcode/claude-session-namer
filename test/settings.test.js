@@ -646,3 +646,50 @@ test('the question comes after the auth probe, so a warning is not buried under 
   const ask = (q) => { assert.equal(spawn.calls.length, 1, 'the probe has already run by the time we ask'); return 'n'; };
   captureBoth(() => settings.install([], { spawn, ask }));
 });
+
+// The hook install writes is a /bin/sh script, so a Windows install would register something that
+// can never fire: settings.json would say titling is on and no title would ever appear, with the
+// hook silent about it by design. That is the failure mode the auth probe exists to prevent, and
+// the platform check is the same posture one step earlier. The platform arrives through testOpts
+// like the probe's spawn - nothing here touches process.platform globally.
+test('install on Windows refuses, writes nothing, and exits non-zero', () => {
+  const { settings, paths } = fresh();
+  const prevExit = process.exitCode;
+  const spawn = probeOk();
+  const ask = fakeAsk('y');
+  const { out, err } = captureBoth(() => settings.install([], { spawn, ask, platform: 'win32' }));
+  assert.match(err, /Windows is not supported/);
+  assert.match(err, /[Nn]othing was installed/);
+  assert.match(err, /POSIX/, 'the reason belongs in the message, so the user can tell this is refusal and not breakage');
+  assert.equal(out, '', 'a refused install never claims to have installed anything');
+  assert.equal(process.exitCode, 1, 'a script that installs this must be able to see it failed');
+  process.exitCode = prevExit;
+  assert.ok(!fs.existsSync(paths.settingsFile()), 'a refused install must not create settings.json');
+  assert.ok(!fs.existsSync(paths.hookScript()), 'and must leave no wrapper behind');
+  assert.equal(spawn.calls.length, 0, 'nothing was installed, so there is nothing to probe');
+  assert.deepEqual(ask.asked, [], 'and nothing to offer either');
+});
+
+test('an existing settings.json survives a Windows install byte-identical', () => {
+  const { settings, paths } = fresh();
+  fs.mkdirSync(paths.claudeDir(), { recursive: true });
+  const before = JSON.stringify({ model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other-tool' }] }] } }, null, 2);
+  fs.writeFileSync(paths.settingsFile(), before);
+  const prevExit = process.exitCode;
+  captureBoth(() => settings.install([], { spawn: probeOk(), platform: 'win32' }));
+  process.exitCode = prevExit;
+  assert.equal(fs.readFileSync(paths.settingsFile(), 'utf8'), before, 'the guard runs ahead of every write, including the hook surgery');
+});
+
+test('install on the platforms the hook does run on is unchanged', () => {
+  for (const platform of ['darwin', 'linux']) {
+    const { settings, paths } = fresh();
+    const spawn = probeOk();
+    const { out, err } = captureBoth(() => settings.install([], { spawn, platform }));
+    assert.match(out, /^Installed\./, `${platform} installs the way it always did`);
+    assert.equal(err, '', 'the guard is silent everywhere it does not apply');
+    assert.equal(spawn.calls.length, 1);
+    assert.ok(fs.existsSync(paths.hookScript()));
+    assert.ok(hookRegistered(paths));
+  }
+});

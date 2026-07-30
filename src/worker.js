@@ -9,7 +9,10 @@ const appstore = require('./appstore');
 //   no-turns | manual-skip | app-renamed-skip | no-check-needed | kept | titled | restyled |
 //   dry-run | title-changed
 // `force` opens the format-reformat gate and nothing else - see the restyle block below.
-function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = false, force = false, runner }) {
+// `model` has no default here: the hook path passes none, and the configured one is read below
+// alongside the prefix setting. An explicit value wins - that is `backfill --model`, and it stays
+// unrestricted on purpose, so a user can point a sweep at a model the config file would not accept.
+function processSession({ sessionId, transcriptPath, model, dryRun = false, force = false, runner }) {
   const entries = t.readEntries(transcriptPath);
   const turns = t.countUserTurns(entries);
   if (turns < 1) return { action: 'no-turns' };
@@ -87,7 +90,7 @@ function processSession({ sessionId, transcriptPath, model = 'haiku', dryRun = f
     excerpt: t.buildExcerpt(entries),
     usePrefix: config.prefix,
     restyle: needsRestyle,
-    model,
+    model: model || config.model,
     runner,
   });
 
@@ -175,7 +178,8 @@ function runFromArgs(argv) {
   try {
     const { sessionId, transcriptPath, model } = parseArgs(argv);
     if (!sessionId || !transcriptPath || !fs.existsSync(transcriptPath)) return;
-    processSession({ sessionId, transcriptPath, model: model || 'haiku' });
+    // No --model on the hook path, so this is undefined and processSession falls back to config.
+    processSession({ sessionId, transcriptPath, model });
   } catch { /* worker never fails loudly */ }
 }
 

@@ -41,6 +41,8 @@ Wakeups are almost always free: the hook checks one number and exits. A model ca
 
 Titles look like `[Emails] SES bounce triage`. Prefixes are reused across sessions, so related work clusters in the sidebar. Prefer bare phrases? `claude-session-namer config prefix off`.
 
+Haiku writes the titles by default, and for an eight-word phrase it is plenty. `claude-session-namer config model sonnet` switches if you want a sharper read of a messy conversation; a sonnet call costs about 3x a haiku one.
+
 ## Commands
 
 ```
@@ -52,7 +54,8 @@ protect <session-id>       Lock whatever name a session has now
 unprotect <session-id>     Drop the lock, let renaming resume
 list                       Recent sessions and their names
 search <query>             Find sessions by name or content
-config [prefix on|off]     Show or change settings
+config [prefix on|off] [model haiku|sonnet]
+                           Show or change settings
 sync-plan                  Print what the app sidebar is missing
 sidebar-setup              Set up the hourly sidebar sync
 ```

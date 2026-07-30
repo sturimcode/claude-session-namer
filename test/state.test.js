@@ -42,9 +42,29 @@ test('load defaults wrong-typed fields to empty objects', () => {
 
 test('loadConfig defaults prefix to true and round-trips', () => {
   const state = freshState();
-  assert.deepEqual(state.loadConfig(), { prefix: true });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
   state.saveConfig({ prefix: false });
-  assert.deepEqual(state.loadConfig(), { prefix: false });
+  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku' });
+});
+
+test('loadConfig defaults model to haiku and round-trips sonnet', () => {
+  const state = freshState();
+  assert.equal(state.loadConfig().model, 'haiku');
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'sonnet' });
+});
+
+// The CLI only ever writes one of the two, but config.json is a plain file a user can edit. A model
+// name we don't support reaching `claude -p` would fail every title call silently, so an unknown
+// value reads as the default rather than being passed through.
+test('loadConfig falls back to haiku on a model it does not support', () => {
+  const state = freshState();
+  const paths = require('../src/paths');
+  require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
+  for (const bad of ['opus', '', 'Sonnet', 42, null]) {
+    require('node:fs').writeFileSync(paths.configFile(), JSON.stringify({ prefix: true, model: bad }));
+    assert.equal(state.loadConfig().model, 'haiku', `model ${JSON.stringify(bad)} should read as haiku`);
+  }
 });
 
 test('loadConfig keeps keys it does not know about', () => {
@@ -62,7 +82,10 @@ test('loadConfig falls back to defaults on a wrong-shaped config file', () => {
   const paths = require('../src/paths');
   require('node:fs').mkdirSync(paths.stateDir(), { recursive: true });
   require('node:fs').writeFileSync(paths.configFile(), '["oops"]');
-  assert.deepEqual(state.loadConfig(), { prefix: true });
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
+
+  require('node:fs').writeFileSync(paths.configFile(), '{broken');
+  assert.deepEqual(state.loadConfig(), { prefix: true, model: 'haiku' });
 });
 
 test('recordTitle tracks written titles and prefix counts', () => {

@@ -3,6 +3,15 @@ const paths = require('./paths');
 
 const DEFAULT = () => ({ sessions: {}, prefixes: {} });
 
+// The two models the titling path offers, and the only two `config model` accepts. Titles are
+// eight-word phrases, which is haiku's job description, so it is the default; sonnet is there for
+// users who want the better read of a messy conversation and will pay ~3x a call for it. The list
+// is deliberately closed rather than a free-form model string: a name that reaches `claude -p` and
+// isn't a model fails every title call, and the hook is silent on failure by design, so a typo
+// would turn titling off with nothing to show for it.
+const MODELS = ['haiku', 'sonnet'];
+const DEFAULT_CONFIG = () => ({ prefix: true, model: 'haiku' });
+
 const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 
 // A missing, corrupt, or wrong-shaped state file is never fatal - the tool starts over from
@@ -51,9 +60,11 @@ const topPrefixes = (s, n = 15) => Object.entries(s.prefixes).sort((a, b) => b[1
 function loadConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(paths.configFile(), 'utf8'));
-    if (!isPlainObject(c)) return { prefix: true };
-    return { ...c, prefix: c.prefix !== false };
-  } catch { return { prefix: true }; }
+    if (!isPlainObject(c)) return DEFAULT_CONFIG();
+    // config.json is a plain file a user can hand-edit, so the model is normalized on the way in
+    // rather than trusted - anything outside the supported pair reads as the default.
+    return { ...c, prefix: c.prefix !== false, model: MODELS.includes(c.model) ? c.model : 'haiku' };
+  } catch { return DEFAULT_CONFIG(); }
 }
 
 function saveConfig(c) {
@@ -63,4 +74,4 @@ function saveConfig(c) {
   fs.renameSync(tmp, paths.configFile());
 }
 
-module.exports = { load, save, session, recordTitle, topPrefixes, loadConfig, saveConfig };
+module.exports = { load, save, session, recordTitle, topPrefixes, loadConfig, saveConfig, MODELS };

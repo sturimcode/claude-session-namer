@@ -641,6 +641,57 @@ test('a rename that lands mid-restyle is not clobbered by the reformatted title'
   assert.equal(t.currentTitle(t.readEntries(file)), 'My hand-written name');
 });
 
+// The hook path passes no model at all, so the config file is the only thing that decides what a
+// title costs on a live session. Asserted through the runner seam - the second argument is what
+// reaches `claude -p --model`.
+test('the worker titles with the configured model', () => {
+  const { worker, state, projectDir } = setup();
+  const seen = [];
+  const runner = (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; };
+
+  const file = fx.writeTranscript(projectDir, 's1', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'titled');
+  assert.deepEqual(seen, ['haiku'], 'the default');
+
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  const file2 = fx.writeTranscript(projectDir, 's2', chat(1));
+  assert.equal(worker.processSession({ sessionId: 's2', transcriptPath: file2, runner }).action, 'titled');
+  assert.deepEqual(seen, ['haiku', 'sonnet']);
+});
+
+// A restyle and a drift recheck are title calls like any other - the setting covers all three, or a
+// user who switched would still be billed the old model on most of their calls.
+test('drift and restyle calls use the configured model too', () => {
+  const { worker, state, projectDir } = setup();
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  const seen = [];
+  const runner = (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; };
+
+  // restyle: a non-conforming title with prefixes on
+  const file = fx.writeTranscript(projectDir, 's1', [...chat(2), fx.titleEntry('SES bounce triage')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: file, runner }).action, 'restyled');
+  // drift: the same session doubled past its new baseline
+  const grown = fx.writeTranscript(projectDir, 's1', [...chat(8), fx.titleEntry('[Emails] SES bounce triage')]);
+  assert.equal(worker.processSession({ sessionId: 's1', transcriptPath: grown, runner: (p, m) => { seen.push(m); return 'KEEP'; } }).action, 'kept');
+  assert.deepEqual(seen, ['sonnet', 'sonnet']);
+});
+
+// backfill --model is the escape hatch, and it is deliberately unrestricted - an explicit request
+// beats the configured default rather than being validated against it.
+test('an explicit model argument overrides the configured one', () => {
+  const { worker, state, projectDir } = setup();
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  const seen = [];
+  const file = fx.writeTranscript(projectDir, 's1', chat(1));
+  worker.processSession({
+    sessionId: 's1',
+    transcriptPath: file,
+    model: 'opus',
+    runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce triage'; },
+  });
+  assert.deepEqual(seen, ['opus']);
+});
+
 test('parseArgs reads flags in any order and tolerates missing values', () => {
   const { worker } = setup();
   assert.deepEqual(

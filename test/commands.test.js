@@ -482,7 +482,56 @@ test('config prints and toggles prefix setting', async () => {
   await capture(() => commands.config(['prefix', 'off']));
   assert.ok((await capture(() => commands.config([]))).includes('prefix: off'));
   const state = require('../src/state');
-  assert.deepEqual(state.loadConfig(), { prefix: false });
+  assert.deepEqual(state.loadConfig(), { prefix: false, model: 'haiku' });
+});
+
+// Bare `config` is the only place a user can see what the tool is set to, so it has to name every
+// setting - a model that isn't printed is a model nobody knows they changed.
+test('bare config prints every setting', async () => {
+  const { commands } = fresh();
+  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: haiku\n');
+  await capture(() => commands.config(['model', 'sonnet']));
+  assert.equal(await capture(() => commands.config([])), 'prefix: on\nmodel: sonnet\n');
+});
+
+test('config model sets haiku or sonnet and round-trips', async () => {
+  const { commands } = fresh();
+  const state = require('../src/state');
+  const sonnet = await capture(() => commands.config(['model', 'sonnet']));
+  assert.equal(sonnet.split('\n')[0], 'model: sonnet');
+  assert.equal(state.loadConfig().model, 'sonnet');
+  assert.equal(await capture(() => commands.config(['model', 'haiku'])), 'model: haiku\n');
+  assert.equal(state.loadConfig().model, 'haiku');
+});
+
+// Sonnet is a real cost step up per call, and a user picking it off a one-line command has no other
+// moment to learn that. Haiku is the default, so switching back needs no note.
+test('config model sonnet prints the cost note, haiku does not', async () => {
+  const { commands } = fresh();
+  const out = await capture(() => commands.config(['model', 'sonnet']));
+  assert.match(out, /Heads up: a sonnet call costs about 3x a haiku call/);
+  assert.match(out, /\$3 vs \$1 per million input tokens, \$15 vs \$5 output/);
+  assert.match(out, /it adds up mainly on a big backfill/);
+  assert.doesNotMatch(await capture(() => commands.config(['model', 'haiku'])), /Heads up/);
+});
+
+// Only the two names the tool supports. Anything else would be passed straight to `claude -p`, where
+// a typo fails every title call in silence - the hook has no way to report it.
+test('config rejects an unsupported model and writes nothing', async () => {
+  const { commands, configDir } = fresh();
+  const state = require('../src/state');
+  const configFile = path.join(configDir, 'claude-session-namer', 'config.json');
+  for (const bad of ['opus', 'claude-3-5-haiku-latest', 'Sonnet', '']) {
+    const res = await exitCodeOf(() => commands.config(['model', bad]));
+    assert.match(res.err, /Usage/i);
+    assert.equal(res.code, 1);
+    assert.equal(fs.existsSync(configFile), false, `config ${JSON.stringify(bad)} must not write`);
+  }
+  const trailing = await exitCodeOf(() => commands.config(['model', 'sonnet', 'please']));
+  assert.match(trailing.err, /Usage/i);
+  assert.equal(trailing.code, 1);
+  assert.equal(fs.existsSync(configFile), false);
+  assert.equal(state.loadConfig().model, 'haiku');
 });
 
 test('config keeps unknown keys and rejects bad arguments', async () => {
@@ -492,7 +541,7 @@ test('config keeps unknown keys and rejects bad arguments', async () => {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ prefix: true, future: 'keep me' }));
   await capture(() => commands.config(['prefix', 'off']));
-  assert.deepEqual(state.loadConfig(), { prefix: false, future: 'keep me' });
+  assert.deepEqual(state.loadConfig(), { prefix: false, future: 'keep me', model: 'haiku' });
 
   const bad = await exitCodeOf(() => commands.config(['prefix', 'maybe']));
   assert.match(bad.err, /Usage/i);
@@ -676,6 +725,19 @@ test('backfill passes the requested model through to the runner', async () => {
   age(file, HOUR);
   const seen = [];
   await capture(() => commands.backfill(['--model', 'sonnet'], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
+  assert.deepEqual(seen, ['sonnet']);
+});
+
+// --model is the power-user escape hatch and stays unrestricted, but a sweep with no flag is the
+// same titling job the hook does and has to spend the same model the user configured.
+test('backfill with no --model uses the configured model', async () => {
+  const { commands, projectDir } = fresh();
+  const state = require('../src/state');
+  state.saveConfig({ ...state.loadConfig(), model: 'sonnet' });
+  const file = fx.writeTranscript(projectDir, 'aaa11111-1111-1111-1111-111111111111', [fx.userEntry('help me with ses bounces'), fx.assistantEntry('sure')]);
+  age(file, HOUR);
+  const seen = [];
+  await capture(() => commands.backfill([], { runner: (_p, model) => { seen.push(model); return '[Emails] SES bounce help'; } }));
   assert.deepEqual(seen, ['sonnet']);
 });
 

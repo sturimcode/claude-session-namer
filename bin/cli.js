@@ -17,7 +17,7 @@ Usage: claude-session-namer <command>
   unprotect   Allow re-titling again: unprotect <session-id>
   list        List sessions with titles (--project <path>)
   search      Find sessions by title or content: search <query>
-  config      Show or change settings: config [prefix on|off]
+  config      Show or change settings: config [prefix on|off] [model haiku|sonnet]
   sync-plan   Print the titles the desktop app's sidebar is missing, as JSON
               lines for an agent to push through the app (--all)
   sidebar-setup

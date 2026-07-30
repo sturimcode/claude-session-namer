@@ -184,7 +184,10 @@ async function backfill(argv, testOpts = {}) {
   if (!scope) return;
   if (badProject(argv)) return;
   const dryRun = flag(argv, '--dry-run');
-  const model = opt(argv, '--model') || 'haiku';
+  // Undefined without the flag, which hands the choice to the configured model - a sweep with no
+  // --model is the same titling job the hook does and should cost the same. The flag itself takes
+  // any string: it is the escape hatch for trying a model `config model` doesn't offer.
+  const model = opt(argv, '--model');
   // sessions() is newest-first, so the window filters and the cap takes the newest of what's left.
   let candidates = sessions(opt(argv, '--project'));
   if (scope.days !== null) {
@@ -416,20 +419,41 @@ async function sidebarSetup(argv) {
   process.stdout.write(SIDEBAR_PASTE_BLOCK);
 }
 
+// Printed once, when the user opts in. Sonnet is a real step up per call and the one-line command
+// that selects it is the only place to say so. The numbers are the published API rates, which is
+// what makes the ratio checkable; the last clause is the part that matters, since a handful of
+// title calls costs a fraction of a cent either way and a full-history sweep is where it shows.
+const SONNET_COST_NOTE = 'Heads up: a sonnet call costs about 3x a haiku call (API rates: $3 vs $1 per million input tokens, $15 vs $5 output). Titles are short, so each call is tiny either way - it adds up mainly on a big backfill.\n';
+
+const CONFIG_USAGE = 'Usage: claude-session-namer config [prefix on|off] [model haiku|sonnet]\n';
+
 async function config(argv) {
+  const current = stateMod.loadConfig();
+  // Bare `config` is the only view of what the tool is set to, so it prints every setting - one a
+  // user can change but never read back is one they can't tell they changed.
   if (argv.length === 0) {
-    process.stdout.write(`prefix: ${stateMod.loadConfig().prefix ? 'on' : 'off'}\n`);
+    process.stdout.write(`prefix: ${current.prefix ? 'on' : 'off'}\nmodel: ${current.model}\n`);
     return;
   }
   // argv.length is checked so a trailing argument ("config prefix on globally") is a usage error
   // rather than a setting silently applied with half the request ignored.
   if (argv.length === 2 && argv[0] === 'prefix' && (argv[1] === 'on' || argv[1] === 'off')) {
     // Spread the current config so a key this version doesn't know about survives the write.
-    stateMod.saveConfig({ ...stateMod.loadConfig(), prefix: argv[1] === 'on' });
+    stateMod.saveConfig({ ...current, prefix: argv[1] === 'on' });
     process.stdout.write(`prefix: ${argv[1]}\n`);
     return;
   }
-  usage('Usage: claude-session-namer config [prefix on|off]\n');
+  // Only the two supported names, and nothing is written on a miss. An arbitrary model string here
+  // would reach `claude -p` on every Stop event, where a name that doesn't resolve fails the call
+  // and the hook swallows it - titling would just stop, with nothing said. `backfill --model` is
+  // where an unlisted model can still be tried, for one run the user is watching.
+  if (argv.length === 2 && argv[0] === 'model' && stateMod.MODELS.includes(argv[1])) {
+    stateMod.saveConfig({ ...current, model: argv[1] });
+    process.stdout.write(`model: ${argv[1]}\n`);
+    if (argv[1] === 'sonnet') process.stdout.write(SONNET_COST_NOTE);
+    return;
+  }
+  usage(CONFIG_USAGE);
 }
 
 // The CLI dispatches on the command name, so the hyphenated key is the one that matters.

@@ -17,7 +17,7 @@ A zero-dependency Node CLI plus a Claude Code Stop hook that keeps session title
 - Titles a session after the first real exchange, then re-titles when the conversation drifts
 - Backfills titles across existing untitled/vague sessions - recent ones by default (50 newest from the last 30 days), full history on `--all`
 - Manual rename, protect, list, and search commands
-- No API key - titles are generated via `claude -p --model haiku` on the user's existing subscription
+- No API key - titles are generated via `claude -p` on the user's existing subscription, on haiku by default and sonnet if the user picks it
 
 MIT license. Two distribution paths, both shipping: npm (`npm install -g claude-session-namer`, then `claude-session-namer install`) and a Claude Code plugin (see Plugin distribution below). A global npm install rather than `npx`: the hook wrapper embeds the absolute path to the CLI, and an npx path points into a cache directory that gets pruned.
 
@@ -60,9 +60,15 @@ The worker owns all logic:
 1. Loads per-session state from `~/.claude/claude-session-namer/state.json`
 2. Decides whether to act (see Titling decisions below); most invocations exit without an LLM call
 3. Builds a compact excerpt from the transcript JSONL - recent user and assistant text turns, truncated per turn and overall
-4. Calls `claude -p --model haiku` (with `CLAUDE_SESSION_NAMER_WORKER=1` in env) using a strict prompt that returns either `KEEP` or a title
+4. Calls `claude -p --model <model>` (with `CLAUDE_SESSION_NAMER_WORKER=1` in env) using a strict prompt that returns either `KEEP` or a title
 5. Appends a `{"type":"custom-title","customTitle":"...","sessionId":"..."}` record to the session transcript file - a single atomic append
 6. Records what it wrote in state
+
+#### Model
+
+The titling model is a config field (`model`, default `"haiku"`), set with `claude-session-namer config model haiku|sonnet`. Haiku is the default because the job is an eight-word phrase, and it is the cheap end of a call that fires several times per session; sonnet is there for users who would rather pay about 3x a call for a better read of a messy conversation. `config model` accepts those two names and nothing else. A free-form model string would reach `claude -p` on every Stop event, and a name that doesn't resolve fails the call into a hook that is silent on failure by design - titling would simply stop, with nothing said and nowhere to see it. `backfill --model <m>` stays unrestricted and overrides the setting for that run: it is one sweep the user is watching, so a bad name reports itself immediately. Everything the worker asks for uses the configured model - first title, drift check, and restyle alike, because a setting that covered only one of the three would leave most calls on the old model. The install-time auth probe stays fixed on haiku: it is a connectivity check, not a title.
+
+An unsupported value hand-written into `config.json` reads as `haiku` rather than being passed through, the same way a missing `prefix` reads as `true`.
 
 ### Titling decisions
 
@@ -86,7 +92,7 @@ The worker owns all logic:
 
 ### Title format
 
-`[Prefix] Short phrase`, hard-capped at 45 characters. The prefix is optional per user: a config file (`~/.claude/claude-session-namer/config.json`, default `{"prefix": true}`) controls it, toggleable via `claude-session-namer config prefix on|off` or `install --no-prefix`. With prefixes off, titles are the bare phrase. Prefixes are free-form but normalized: the prompt includes the user's previously-used prefixes with an instruction to reuse one when it fits and coin a new one only for a genuinely new workstream. Seen prefixes and counts live in state.
+`[Prefix] Short phrase`, hard-capped at 45 characters. The prefix is optional per user: a config file (`~/.claude/claude-session-namer/config.json`, default `{"prefix": true, "model": "haiku"}`) controls it, toggleable via `claude-session-namer config prefix on|off` or `install --no-prefix`. With prefixes off, titles are the bare phrase. Prefixes are free-form but normalized: the prompt includes the user's previously-used prefixes with an instruction to reuse one when it fits and coin a new one only for a genuinely new workstream. Seen prefixes and counts live in state.
 
 The setting is a format contract rather than a default for new titles. `titler.matchesFormat(title, usePrefix)` is the test - a bracketed prefix of 1-25 characters followed by a phrase in prefix mode, a title that doesn't open with a bracket in bare mode - and any title the tool manages that fails it gets reformatted with its meaning preserved (see Format restyle above). Reformatting rather than regenerating is the point: the old title was usually right about the work, so re-deriving it would risk the meaning to fix the shape. Renamed, protected, and app-renamed sessions are exempt.
 

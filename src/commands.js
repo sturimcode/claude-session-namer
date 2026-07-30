@@ -593,15 +593,21 @@ const SIDEBAR_TASK_CRON = '2 * * * *';
 // The opening line is titler.SIDEBAR_TASK_SIGNATURE rather than a literal, because it is also how
 // this tool recognizes the routine's own run sessions and declines to title them - see the worker's
 // own-prompt skip. A literal here could be edited without the recognizer following it.
-const SIDEBAR_TASK_PROMPT = `${SIDEBAR_TASK_SIGNATURE}
+// The routine reads and renames; it archives nothing. Observed live twice on 2026-07-30: an
+// archive_session call from a scheduled run always raises "This tool requires explicit approval
+// regardless of permission mode", for the run's own session and for ordinary ones alike, and no
+// permission rule bypasses it - while set_session_title in the same runs auto-approves. So a
+// cleanup step here could never complete unattended, however well it identified its targets. The
+// identification rule it needed is real and still shipped, in the skill and the paste block, for a
+// user to run from an interactive session where the pre-approved rules apply.
+const SIDEBAR_TASK_PROMPT = `${SIDEBAR_TASK_SIGNATURE}, then tidy up.
 
 1. Run \`claude-session-namer sync-plan\` (do NOT pass \`--all\` - user-renamed sessions must stay excluded). If the command is not found, stop and say so: it is on this session's Bash PATH only while the plugin is enabled for this folder, or when the npm package is installed globally. Do not guess at a path.
 2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to sync - continue with step 4.
 3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle. Stop immediately on the first error - no retries, no continuing - and report what failed.
 4. Run \`claude-session-namer sweep-done\`. It is a no-op unless the user turned done markers on.
-5. Cleanup: archive prior run sessions of this same scheduled task, identified by their scheduled-task linkage and nothing else. List this app's sessions, and for each candidate call the app's session-detail tool (get_session), which reports the scheduled task a session belongs to. Archive a session only when that linkage names this task's id, \`${SIDEBAR_TASK_ID}\`. Never match on title: claude-session-namer renames these run sessions itself, usually within a couple of replies, so a run's title says nothing about which task produced it. Never archive the current session, and never archive a session whose linkage you could not read.
 
-Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, the session lookups step 5 needs, and archiving prior run sessions of this task. Never run backfill or any other command, and never delete anything.`;
+Take no actions beyond these: sync-plan, sweep-done, and the per-session rename calls. Never run backfill or any other command, and never archive or delete anything. Tidying up the sessions these runs leave behind is deliberately not part of this routine: the app requires manual approval for archive_session in a scheduled run whatever permission rules are set, so a run that tried would sit waiting for a person who is not there. That cleanup belongs to an interactive session.`;
 
 // The paste path, for an install with no plugin to carry the skill. It is one message to a desktop
 // session: the same creation step the skill runs, condensed to what the assistant needs.
@@ -609,7 +615,7 @@ const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using
 
 ${SIDEBAR_TASK_PROMPT}
 
-Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__list_sessions", "mcp__ccd_session_mgmt__get_session", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to prove the path once now, by running the task's steps yourself in this session: \`claude-session-namer sync-plan\`, then the set_session_title call for each line it prints, then \`claude-session-namer sweep-done\`, skipping the cleanup step. Never test it by scheduling the task to fire: a one-time \`fireAt\` run clears the cron schedule and the task disables itself after firing, which leaves the hourly sync dead with nothing said.
+Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__list_sessions", "mcp__ccd_session_mgmt__get_session", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Then tell me how old run sessions get cleared, because the routine cannot do it itself: the app requires manual approval for archive_session in a scheduled run whatever permission rules are set, so I ask an interactive desktop session to archive prior runs of the \`${SIDEBAR_TASK_ID}\` task instead. Whoever does that works from the scheduled-task linkage - list the sessions, call get_session on each candidate, archive only the ones whose linkage names that task id. Never match on title, since claude-session-namer renames these run sessions itself; never the current session; never a session whose linkage could not be read. Finish by offering to prove the path once now, by running the task's steps yourself in this session: \`claude-session-namer sync-plan\`, then the set_session_title call for each line it prints, then \`claude-session-namer sweep-done\`. Never test it by scheduling the task to fire: a one-time \`fireAt\` run clears the cron schedule and the task disables itself after firing, which leaves the hourly sync dead with nothing said.
 `;
 
 // Printed by install only when the user says they use the desktop app.

@@ -64,26 +64,61 @@ test('the task prompt keeps every rule that makes the routine safe to run unatte
   assert.match(SIDEBAR_TASK_PROMPT, /set_session_title/, 'the app rename tool is the only writer');
   assert.match(SIDEBAR_TASK_PROMPT, /Stop immediately on the first error/, 'no retries, no continuing past a failure');
   assert.match(SIDEBAR_TASK_PROMPT, /no-op unless the user turned done markers on/, 'the model-calling sweep must stay behind its opt-in');
-  assert.match(SIDEBAR_TASK_PROMPT, /Never archive the current session/, 'cleanup must not eat the run doing the cleaning');
   assert.match(SIDEBAR_TASK_PROMPT, /Take no actions beyond these/, 'the action list is closed, not illustrative');
   assert.match(SIDEBAR_TASK_PROMPT, /Never run backfill/, 'an unscoped model-calling sweep is not what the user signed up for');
-  assert.match(SIDEBAR_TASK_PROMPT, /never delete anything/, 'archive is the ceiling; deletion never');
+  assert.match(SIDEBAR_TASK_PROMPT, /never archive or delete anything/, 'the routine reads and renames; it removes nothing');
 });
 
-// Field report from a real machine: the cleanup step matched prior runs by title, and this tool's
-// own Stop hook renamed those very sessions within a couple of replies - so the match never landed
-// and the run sessions piled up, 8 of them in a day. The identity of a run is its scheduled-task
-// linkage, which nothing here rewrites; the title is the one thing about it that moves.
-test('the cleanup step identifies prior runs by their scheduled-task linkage, never by title', () => {
-  assert.match(SIDEBAR_TASK_PROMPT, /scheduled-task linkage/, 'linkage is what says which task produced a session');
-  assert.match(SIDEBAR_TASK_PROMPT, /get_session/, 'the session-detail tool is where the linkage is read');
-  assert.match(SIDEBAR_TASK_PROMPT, /session-title-sidebar-sync/, 'and the linkage has to name this task specifically');
-  assert.match(SIDEBAR_TASK_PROMPT, /Never match on title/, 'the rule the field report cost us');
-  assert.match(SIDEBAR_TASK_PROMPT, /renames these run sessions itself/, 'say why, or the next edit puts titles back');
-  assert.match(SIDEBAR_TASK_PROMPT, /Never archive the current session/, 'unchanged: cleanup must not eat the run doing the cleaning');
-  assert.match(SIDEBAR_TASK_PROMPT, /never archive a session whose linkage you could not read/, 'no linkage, no archive');
-  // The rule that failed in the field has to be gone, not merely outvoted by the new one.
-  assert.ok(!/title exactly matches/.test(SIDEBAR_TASK_PROMPT), 'title matching is what broke; it cannot survive anywhere in the step');
+// The routine archives nothing. Observed live twice on 2026-07-30: an archive_session call from a
+// scheduled run always raises "This tool requires explicit approval regardless of permission mode",
+// for the run's own session and for ordinary ones alike, with no permission rule that bypasses it,
+// while set_session_title auto-approves in those same runs. A cleanup step here would stall the run
+// on a prompt nobody is there to answer, however well it identified its targets.
+test('the task prompt asks for no archiving at all, and says why', () => {
+  assert.doesNotMatch(SIDEBAR_TASK_PROMPT, /^\s*5\./m, 'the cleanup step is gone, not renumbered');
+  assert.ok(!SIDEBAR_TASK_PROMPT.includes('get_session'), 'nothing in the routine looks a session up to archive it');
+  assert.ok(!SIDEBAR_TASK_PROMPT.includes('archive_session') || /manual approval for archive_session/.test(SIDEBAR_TASK_PROMPT),
+    'the tool may only be named in the reason it is not used');
+  assert.match(SIDEBAR_TASK_PROMPT, /never archive or delete anything/, 'archiving joins deleting on the never list');
+  // The reason travels with the rule, or the next reader restores a step that cannot run.
+  assert.match(SIDEBAR_TASK_PROMPT, /requires manual approval for archive_session in a scheduled run/);
+  assert.match(SIDEBAR_TASK_PROMPT, /belongs to an interactive session/, 'and say where the cleanup did go');
+  // The rule that failed in the field cannot come back in either form.
+  assert.ok(!/title exactly matches/.test(SIDEBAR_TASK_PROMPT), 'title matching is what broke the old cleanup step');
+});
+
+// The cleanup itself is real work with a real rule - it just belongs where archive_session runs
+// without a prompt. The identity of a run is its scheduled-task linkage, which nothing rewrites; its
+// title is the one thing about it that moves, because this tool renames it.
+test('the skill hands the cleanup to an interactive session, matched by linkage and never by title', () => {
+  const text = skill();
+  assert.match(text, /scheduled-task linkage/, 'linkage is what says which task produced a session');
+  assert.match(text, /get_session/, 'the session-detail tool is where the linkage is read');
+  assert.match(text, /session-title-sidebar-sync/, 'and the linkage has to name this task specifically');
+  assert.match(text, /Never match on title/, 'the rule the field report cost us');
+  assert.match(text, /renames these run sessions itself/, 'say why, or the next edit puts titles back');
+  assert.match(text, /Never archive the current session/, 'cleanup must not eat the session doing the cleaning');
+  assert.match(text, /linkage could not be read/, 'no linkage, no archive');
+  assert.match(text, /interactive/i, 'the whole point: this cannot run on a schedule');
+  assert.match(text, /explicit approval regardless of permission mode/, 'quote the prompt, so nobody retries the rule that fails');
+  // The paste block is the npm user's only copy of all of that.
+  assert.match(SIDEBAR_PASTE_BLOCK, /interactive desktop session/);
+  assert.match(SIDEBAR_PASTE_BLOCK, /scheduled-task linkage/);
+  assert.match(SIDEBAR_PASTE_BLOCK, /get_session/);
+  assert.match(SIDEBAR_PASTE_BLOCK, /Never match on title/);
+  assert.match(SIDEBAR_PASTE_BLOCK, /manual approval for archive_session/);
+});
+
+// The three session tools stay pre-approved even though the routine no longer calls any of them:
+// they are exactly what makes the user's own cleanup promptless in an interactive session, which is
+// the only place it can happen.
+test('both setup paths still pre-approve the tools the interactive cleanup needs', () => {
+  for (const [name, text] of [['skill', skill()], ['paste block', SIDEBAR_PASTE_BLOCK]]) {
+    for (const rule of ['mcp__ccd_session_mgmt__list_sessions', 'mcp__ccd_session_mgmt__get_session', 'mcp__ccd_session_mgmt__archive_session']) {
+      assert.ok(text.includes(rule), `${name}: ${rule} has to stay in the allow list`);
+    }
+    assert.ok(text.includes('mcp__ccd_session_mgmt__set_session_title'), `${name}: the routine's own writer`);
+  }
 });
 
 // The routine's run sessions are sessions like any other, so the Stop hook titles them - which is
@@ -91,12 +126,18 @@ test('the cleanup step identifies prior runs by their scheduled-task linkage, ne
 // recognizes them by the prompt's opening line, so that line cannot be a copy: the template is built
 // from the exported constant, and the recognizer reads the same one.
 test('the task prompt opens with the signature the tool recognizes its own runs by', () => {
-  assert.equal(typeof SIDEBAR_TASK_SIGNATURE, 'string');
-  assert.ok(SIDEBAR_TASK_PROMPT.startsWith(SIDEBAR_TASK_SIGNATURE), 'the signature must be the prompt\'s literal first line');
-  assert.equal(SIDEBAR_TASK_SIGNATURE, SIDEBAR_TASK_PROMPT.split('\n')[0]);
-  assert.ok(skill().includes(SIDEBAR_TASK_SIGNATURE), 'the copy the skill hands over has to open with it too');
   const { isOurOwnPrompt } = require('../src/titler');
-  assert.equal(isOurOwnPrompt(SIDEBAR_TASK_PROMPT), true, 'the recognizer and the template are the same string');
+  assert.equal(typeof SIDEBAR_TASK_SIGNATURE, 'string');
+  assert.ok(SIDEBAR_TASK_PROMPT.startsWith(SIDEBAR_TASK_SIGNATURE), 'the prompt must literally open with the signature');
+  // The sentence opening, not the whole line. A routine created before today carries the prompt it
+  // was created with, frozen in the app's task registry, and only the tail of that line has moved -
+  // so matching the opening keeps those runs recognizable through this reword and the next.
+  assert.ok(!SIDEBAR_TASK_SIGNATURE.includes('\n'), 'a signature spanning lines could never match a first message');
+  assert.ok(SIDEBAR_TASK_PROMPT.split('\n')[0].startsWith(SIDEBAR_TASK_SIGNATURE));
+  assert.equal(isOurOwnPrompt('Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy up.\n\n1. Run x'), true,
+    'the wording this shipped with on 2026-07-29 is still recognized');
+  assert.ok(skill().includes(SIDEBAR_TASK_SIGNATURE), 'the copy the skill hands over has to open with it too');
+  assert.equal(isOurOwnPrompt(SIDEBAR_TASK_PROMPT), true, 'the recognizer and the template cannot disagree');
 });
 
 // ${CLAUDE_PLUGIN_ROOT} resolves in plugin components - hook and monitor commands, MCP and LSP

@@ -40,9 +40,8 @@ Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy
 2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to sync - continue with step 4.
 3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle. Stop immediately on the first error - no retries, no continuing - and report what failed.
 4. Run `claude-session-namer sweep-done`. It is a no-op unless the user turned done markers on.
-5. Cleanup: archive prior run sessions of this same scheduled task, identified by their scheduled-task linkage and nothing else. List this app's sessions, and for each candidate call the app's session-detail tool (get_session), which reports the scheduled task a session belongs to. Archive a session only when that linkage names this task's id, `session-title-sidebar-sync`. Never match on title: claude-session-namer renames these run sessions itself, usually within a couple of replies, so a run's title says nothing about which task produced it. Never archive the current session, and never archive a session whose linkage you could not read.
 
-Take no actions beyond these: sync-plan, sweep-done, the per-session rename calls, the session lookups step 5 needs, and archiving prior run sessions of this task. Never run backfill or any other command, and never delete anything.
+Take no actions beyond these: sync-plan, sweep-done, and the per-session rename calls. Never run backfill or any other command, and never archive or delete anything. Tidying up the sessions these runs leave behind is deliberately not part of this routine: the app requires manual approval for archive_session in a scheduled run whatever permission rules are set, so a run that tried would sit waiting for a person who is not there. That cleanup belongs to an interactive session.
 ```
 
 The task's working folder needs claude-session-namer reachable from a Bash call: any folder for an npm install, and a folder where this plugin is enabled otherwise.
@@ -60,13 +59,24 @@ Run-time prompt approvals do not reliably persist for the app's own tools, so of
 "mcp__ccd_session_mgmt__archive_session"
 ```
 
-Say what each one is for in a line: the two commands the routine runs, the app's rename tool that pushes titles, and the three the cleanup step uses to find its own prior runs and archive them. If the user declines, that is fine - the routine still works, it just pauses on a prompt whenever an approval has not stuck.
+Say what each one is for in a line: the two commands the routine runs, the app's rename tool that pushes titles, and the three the user's own cleanup uses to find prior runs and archive them (section 7). If the user declines, that is fine - the routine still works, it just pauses on a prompt whenever an approval has not stuck.
 
 ## 6. Say what to expect
 
 Keep it to a few lines:
 
 - The task runs only while the desktop app is open and the machine is awake. A missed hour is skipped, and the next run picks up everything outstanding anyway.
-- Offer to prove the path once now, whether or not the rules were added, by running the task's steps yourself in this session: `claude-session-namer sync-plan`, then the `set_session_title` call for each line it prints, then `claude-session-namer sweep-done`. Skip step 5, the cleanup - there is nothing to tidy yet.
+- Offer to prove the path once now, whether or not the rules were added, by running the task's steps yourself in this session: `claude-session-namer sync-plan`, then the `set_session_title` call for each line it prints, then `claude-session-namer sweep-done`.
 - Never test it by scheduling the task to fire. A one-time `fireAt` run clears the cron schedule and the task disables itself once it has fired, so the hourly sync would be dead from that moment with nothing said.
 - Sessions the user renamed in the app are left out of every sync. The app refuses an agent rename of those, so pushing them is not possible and not attempted.
+- Each run leaves a session behind, and the routine cannot clear them itself. Point at section 7 in one line.
+
+## 7. Clearing old run sessions
+
+The routine archives nothing, by design. An `archive_session` call from a scheduled run always raises a manual approval - "This tool requires explicit approval regardless of permission mode" - and no permission rule bypasses it (observed live 2026-07-30, twice: for the run's own session and for ordinary sessions alike, while `set_session_title` auto-approved in those same runs). A cleanup step inside the task would stall waiting for a person who is not watching.
+
+So it is something the user asks for, in any interactive desktop session, where the rules from section 5 make it promptless. Tell them that, and tell them what the session doing it has to do:
+
+- Find prior runs by their **scheduled-task linkage**: list the app's sessions, call `get_session` on each candidate, and act only on the ones whose linkage names `session-title-sidebar-sync`.
+- **Never match on title.** claude-session-namer renames these run sessions itself, usually within a couple of replies, so a run's title says nothing about which task produced it.
+- Never archive the current session, and never archive a session whose linkage could not be read.

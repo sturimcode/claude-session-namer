@@ -248,13 +248,16 @@ function judgeDone({ currentTitle, excerpt, model = 'haiku', runner = runClaude 
   return parseDone(runner(buildDonePrompt({ currentTitle, excerpt }), model));
 }
 
-// The opening line of the scheduled sidebar routine's task prompt. `commands.js` builds that prompt
-// out of this constant, so the template and the signature cannot drift apart. It sits here with the
+// How the scheduled sidebar routine's task prompt opens. `commands.js` builds that prompt out of
+// this constant, so the template and the signature cannot drift apart. It is the sentence opening
+// rather than the whole first line on purpose: a routine created last month carries whatever prompt
+// text it was created with, frozen in the app's own task registry, and only the tail of that line
+// has ever changed. Matching the opening keeps those runs recognizable through a reword. It sits here with the
 // other two signatures rather than beside the template because the worker and both sweeps all have
 // to recognize it and all already import this module - importing commands.js instead would close a
 // require cycle (commands -> worker -> commands), and commands.js assigns its exports last, so the
 // worker would hold an empty object forever.
-const SIDEBAR_TASK_SIGNATURE = 'Sync claude-session-namer titles into the Claude Code desktop sidebar, then tidy up.';
+const SIDEBAR_TASK_SIGNATURE = 'Sync claude-session-namer titles into the Claude Code desktop sidebar';
 
 // Every prompt this tool emits can come back at it as some other session's first user message: the
 // two title calls file transcripts of their own, and the hourly routine's run session opens with the

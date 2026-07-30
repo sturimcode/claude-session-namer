@@ -1,6 +1,6 @@
 {
   "name": "claude-session-namer",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Names Claude Code sessions more accurately and keeps the names accurate as the conversation changes.",
   "bin": {
     "claude-session-namer": "bin/cli.js"

@@ -161,6 +161,22 @@ test('rename flattens newlines and terminal escapes into a single row', async ()
   assert.equal(lines.length, 1);
 });
 
+// The claim goes into state before the transcript can carry the title - the crash ordering every
+// other titled path in this tool keeps. The other way round, a save that fails leaves a hand-typed
+// name in the transcript with nothing anywhere saying it is spoken for, and the next worker run
+// reformats it straight off the session. The failure here is a real one: state.json's directory is
+// occupied by a plain file, so the write throws where a full disk would.
+test('a rename whose claim cannot be saved leaves the transcript untouched', async () => {
+  const { commands, projectDir, configDir } = fresh();
+  const id = 'aaa11111-1111-1111-1111-111111111111';
+  const file = fx.writeTranscript(projectDir, id, [fx.userEntry('why are ses bounces climbing'), fx.assistantEntry('looking')]);
+  const before = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(path.join(configDir, 'claude-session-namer'), 'not a directory');
+
+  await assert.rejects(() => commands.rename([id, 'My', 'hand', 'typed', 'name']));
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'the worst a failed rename leaves is the old title');
+});
+
 // Sanitizing is about characters that break the one-line record, not about punctuation the user
 // meant - a hyphen carries meaning in a title and has to survive untouched.
 test('rename leaves a hyphenated title exactly as typed', async () => {
@@ -1211,6 +1227,42 @@ test('sweep-done leaves a session touched in the last two hours alone', async ()
   assert.ok(cold.includes('1 session(s) marked done, 1 skipped.'), cold);
   const t = require('../src/transcript');
   assert.equal(t.currentTitle(t.readEntries(s.file)), '✓ [API] Rate limiter fix');
+});
+
+// The inactivity cutoff is snapshotted once, before the loop, but every candidate costs a model call
+// of up to 90 seconds - so a candidate judged late in a long sweep was screened against an mtime that
+// can be many minutes old. The file is re-stat'd immediately before the call and again after it, the
+// same fresh-recheck discipline the worker keeps around its own call.
+test('sweep-done drops a candidate whose session was touched while it was being judged', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  const s = titledIdle(projectDir, 1);
+  const out = await capture(() => commands['sweep-done']([], {
+    // the user comes back to the session while the judgment is in flight
+    runner: () => { age(s.file, 0); return 'DONE'; },
+  }));
+  assert.ok(out.includes('0 session(s) marked done, 1 skipped.'), out);
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(s.file)), s.title, 'a session back in use keeps its plain title');
+  // and nothing is recorded: the judgment was about a transcript that has since moved on
+  assert.equal(require('../src/state').load().sessions[s.id].doneCheckedRecords, undefined);
+});
+
+test('sweep-done re-checks idleness before the call, so a session resumed mid-sweep is never judged', async () => {
+  const { commands, projectDir } = fresh();
+  enableDoneMarker();
+  // Newest first, so the 3-hour-idle session is judged before the 4-hour-idle one.
+  const firstUp = titledIdle(projectDir, 1, { idleMs: 3 * HOUR });
+  const resumed = titledIdle(projectDir, 2, { idleMs: 4 * HOUR });
+  let calls = 0;
+  const out = await capture(() => commands['sweep-done']([], {
+    runner: () => { calls++; age(resumed.file, 0); return 'ONGOING'; },
+  }));
+  assert.equal(calls, 1, 'the second session was back in use by the time its turn came');
+  assert.ok(out.includes('0 session(s) marked done, 2 skipped.'), out);
+  const state = require('../src/state');
+  assert.equal(state.load().sessions[firstUp.id].doneCheckedRecords, firstUp.records);
+  assert.equal(state.load().sessions[resumed.id].doneCheckedRecords, undefined, 'a session skipped on activity records no checkpoint');
 });
 
 // Nothing here is a new protection - it is the existing ones, plus the one rule of its own: a title

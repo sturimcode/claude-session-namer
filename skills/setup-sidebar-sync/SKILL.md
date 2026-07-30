@@ -22,7 +22,7 @@ Say what the routine does in one sentence: every hour it renames sessions in the
 List the existing scheduled tasks before creating anything. If one already carries the id `session-title-sidebar-sync`, do not create a second:
 
 - Its prompt and schedule already match what is below: say it is already set up, and stop.
-- They differ: update that task in place.
+- They differ: update that task in place. Never pass `fireAt` on an update - a one-time fire time replaces the cron schedule, and the task disables itself after it runs.
 
 ## 4. Create the task
 
@@ -65,5 +65,6 @@ Say what each one is for in a line: the two commands the routine runs, the app's
 Keep it to a few lines:
 
 - The task runs only while the desktop app is open and the machine is awake. A missed hour is skipped, and the next run picks up everything outstanding anyway.
-- Offer to run it once now, whether or not the rules were added - the first run proves the whole path end to end while the user is still watching.
+- Offer to prove the path once now, whether or not the rules were added, by running the task's steps yourself in this session: `claude-session-namer sync-plan`, then the `set_session_title` call for each line it prints, then `claude-session-namer sweep-done`. Skip step 5, the cleanup - there is nothing to tidy yet.
+- Never test it by scheduling the task to fire. A one-time `fireAt` run clears the cron schedule and the task disables itself once it has fired, so the hourly sync would be dead from that moment with nothing said.
 - Sessions the user renamed in the app are left out of every sync. The app refuses an agent rename of those, so pushing them is not possible and not attempted.

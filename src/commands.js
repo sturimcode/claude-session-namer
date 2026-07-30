@@ -322,6 +322,14 @@ async function sweepDone(argv, testOpts = {}) {
     const records = entries.length;
     if (Number.isInteger(st.doneCheckedRecords) && st.doneCheckedRecords >= records) { skipped++; continue; }
 
+    // The cutoff was taken once, before the loop, but each candidate costs a model call of up to 90
+    // seconds - so a session judged late in a long sweep was screened on an mtime that can be many
+    // minutes old, and one the user came back to at minute three could still collect a checkmark.
+    // Re-stat right before the call, and again after it, on the same cutoff: a file that has moved
+    // since is a session in use. A vanished file reads the same way - there is nothing to mark.
+    const stillIdle = () => { try { return fs.statSync(sess.file).mtimeMs <= cutoff; } catch { return false; } };
+    if (!stillIdle()) { skipped++; continue; }
+
     let done;
     // One unreadable transcript or one dead `claude` invocation must not end the sweep - count it,
     // say which session, and keep going, the same way backfill does.
@@ -348,6 +356,11 @@ async function sweepDone(argv, testOpts = {}) {
       continue;
     }
     consecutiveFailures = 0;
+    // The other half of the fresh re-check: the session may have been picked up while the judgment
+    // was in flight. Nothing is recorded on the way out - a checkpoint here would say the session was
+    // judged at a size that no longer describes it, and the answer was about a transcript that has
+    // moved on. A dry run skips it too, so the preview says what a real run would do.
+    if (!stillIdle()) { skipped++; continue; }
 
     const markedTitle = titler.markTitle(title);
     if (dryRun) {
@@ -451,7 +464,11 @@ async function rename(argv) {
   if (!id || !title) return usage('Usage: claude-session-namer rename <session-id> "title"\n');
   const match = matchSession(id);
   if (!match) return;
-  t.appendTitleRecord(match.file, match.sessionId, title);
+  // Claim in state, save, then append - the crash ordering every titled path here keeps. Appending
+  // first would put a hand-typed name in the transcript with nothing anywhere claiming it, and a
+  // failed save (a full disk, an unwritable state dir) would leave it that way: the next worker run
+  // reads an unclaimed, unlocked title and reformats it straight off the session. This way the worst
+  // a failure leaves is the old title, and the user runs rename again.
   const s = stateMod.load();
   stateMod.recordTitle(s, match.sessionId, title, t.countUserTurns(t.readEntries(match.file)));
   const sess = stateMod.session(s, match.sessionId);
@@ -462,6 +479,7 @@ async function rename(argv) {
   sess.done = false;
   delete sess.doneCheckedRecords;
   stateMod.save(s);
+  t.appendTitleRecord(match.file, match.sessionId, title);
   process.stdout.write(`Renamed ${match.sessionId.slice(0, 8)} -> ${title}\n`);
 }
 
@@ -583,11 +601,11 @@ Take no actions beyond these: sync-plan, sweep-done, the per-session rename call
 
 // The paste path, for an install with no plugin to carry the skill. It is one message to a desktop
 // session: the same creation step the skill runs, condensed to what the assistant needs.
-const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using this app's own scheduled-task tool, create a scheduled task with the id \`${SIDEBAR_TASK_ID}\`, running hourly on the cron schedule \`${SIDEBAR_TASK_CRON}\`. List the existing scheduled tasks first: if one already carries that id, update it rather than adding a second. The task prompt must be exactly this:
+const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using this app's own scheduled-task tool, create a scheduled task with the id \`${SIDEBAR_TASK_ID}\`, running hourly on the cron schedule \`${SIDEBAR_TASK_CRON}\`. List the existing scheduled tasks first: if one already carries that id, update it rather than adding a second, and never pass \`fireAt\` on that update - a one-time fire time replaces the cron schedule. The task prompt must be exactly this:
 
 ${SIDEBAR_TASK_PROMPT}
 
-Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to run the task once now to prove the whole path.
+Then offer to pre-approve the routine's permissions durably, and with my consent add these to the permissions.allow array in ~/.claude/settings.json (read the file first, merge, never replace other entries): "Bash(claude-session-namer sync-plan:*)", "Bash(claude-session-namer sweep-done:*)", "mcp__ccd_session_mgmt__set_session_title", "mcp__ccd_session_mgmt__archive_session". Run-time prompt approvals do not reliably persist for the app's own tools. Finish by offering to prove the path once now, by running the task's steps yourself in this session: \`claude-session-namer sync-plan\`, then the set_session_title call for each line it prints, then \`claude-session-namer sweep-done\`, skipping the cleanup step. Never test it by scheduling the task to fire: a one-time \`fireAt\` run clears the cron schedule and the task disables itself after firing, which leaves the hourly sync dead with nothing said.
 `;
 
 // Printed by install only when the user says they use the desktop app.

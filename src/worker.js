@@ -239,6 +239,15 @@ function processSession({ sessionId, transcriptPath, model, dryRun = false, forc
   if (!freshSess.written.includes(generated)) freshSess.written.push(generated);
   stateMod.save(fresh);
   t.appendTitleRecord(transcriptPath, sessionId, finalTitle);
+  // The append is exactly one record, and the done checkpoint has to move with it. Left where the
+  // sweep set it, it reads one short of the transcript and the next run takes our own write for the
+  // user picking the session back up: the marker comes off mechanically, and the next sweep pays for
+  // a fresh judgment - so the one-call-per-finished-session bound is gone and the marker flaps.
+  // Moving it by exactly one is what keeps a record somebody else added just as visible as before;
+  // resetting it to the size we happen to see here would swallow that too.
+  // recordTitle can't own this: `rename` calls it without appending anything, and the count it takes
+  // is the pre-append one either way.
+  if (Number.isInteger(freshSess.doneCheckedRecords)) freshSess.doneCheckedRecords += 1;
   // Recorded against the core: it is the string the prefix accounting is about, and a marked title
   // would read as having no prefix at all.
   stateMod.recordTitle(fresh, sessionId, generated, turns, records);

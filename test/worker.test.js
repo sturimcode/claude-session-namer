@@ -1000,6 +1000,62 @@ test('a restyle of a marked title keeps the marker and never shows it to the mod
   assert.equal(state.load().sessions.s1.done, true);
 });
 
+// The restyle above appends a record of our own, and the done checkpoint has to move with it. Left
+// where the sweep set it, the checkpoint reads one short of the transcript and the very next run
+// takes our own write for the user resuming: the marker comes off mechanically, and the next sweep
+// pays for a fresh judgment. One judgment per finished session is the bound that buys.
+test('a restyle of a marked session moves the done checkpoint past our own append', () => {
+  const { worker, state, projectDir } = setup();
+  const core = '[API] Rate limiter fix';
+  const marked = `✓ ${core}`;
+  const entries = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, entries.length);
+  state.saveConfig({ ...state.loadConfig(), prefix: false });
+  const file = fx.writeTranscript(projectDir, 's1', entries);
+
+  const res = worker.processSession({ sessionId: 's1', transcriptPath: file, force: true, runner: () => 'Rate limiter fix' });
+  assert.equal(res.action, 'restyled');
+
+  const t = require('../src/transcript');
+  assert.equal(state.load().sessions.s1.doneCheckedRecords, t.readEntries(file).length, 'the checkpoint counts the record the restyle wrote');
+
+  // The next run sees no growth it did not cause: the marker stays on, nothing is asked of a model.
+  const after = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('our own append is not the session picking up again'); },
+  });
+  assert.equal(after.action, 'no-check-needed');
+  assert.equal(t.currentTitle(t.readEntries(file)), '✓ Rate limiter fix');
+  assert.equal(state.load().sessions.s1.done, true);
+});
+
+// The other half of the same rule: a record the user added is still growth, and the checkpoint moves
+// by exactly the one record we wrote rather than being reset to the size we happen to see.
+test('a restyle still leaves a user turn added during it reading as growth', () => {
+  const { worker, state, projectDir } = setup();
+  const core = '[API] Rate limiter fix';
+  const marked = `✓ ${core}`;
+  const entries = [...chat(2), fx.titleEntry(marked)];
+  markedSession(state, 's1', core, entries.length);
+  state.saveConfig({ ...state.loadConfig(), prefix: false });
+  const file = fx.writeTranscript(projectDir, 's1', entries);
+
+  // The user types while the restyle call is blocked, so the transcript grows under it.
+  const res = worker.processSession({
+    sessionId: 's1', transcriptPath: file, force: true,
+    runner: () => { fx.writeTranscript(projectDir, 's1', [...chat(3), fx.titleEntry(marked)]); return 'Rate limiter fix'; },
+  });
+  assert.equal(res.action, 'restyled');
+
+  const after = worker.processSession({
+    sessionId: 's1', transcriptPath: file,
+    runner: () => { throw new Error('stripping the marker never calls the model'); },
+  });
+  const t = require('../src/transcript');
+  assert.equal(t.currentTitle(t.readEntries(file)), 'Rate limiter fix', 'the session moved, so the marker comes off');
+  assert.equal(state.load().sessions.s1.done, false);
+});
+
 // A marked title we did not write is somebody else's checkmark - there is no core of ours to fall
 // back to, so nothing is stripped. A KEEP writes nothing at all, marker included.
 test('a KEEP on a marked title leaves the title exactly as it stands', () => {

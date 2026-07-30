@@ -104,6 +104,27 @@ test('the skill routes creation through the app rather than writing the task reg
   assert.ok(!/write[^.\n]*scheduled-tasks\//i.test(text), 'never instruct a write into the app registry');
 });
 
+// Field report: the "run it once now" step led an agent to fire the task through the app's own
+// scheduler with a one-time fireAt, which per the app's contract replaces the cron schedule and
+// auto-disables the task once it has run. Sidebar sync was silently dead for two hours. The test is
+// what the setup can never do, and both copies of the instructions have to carry it.
+test('both setup paths run the test inline and forbid a scheduled one-time fire', () => {
+  for (const [name, text] of [['skill', skill()], ['paste block', SIDEBAR_PASTE_BLOCK]]) {
+    assert.match(text, /fireAt/, `${name}: the mechanism that broke it has to be named to be ruled out`);
+    assert.match(text, /Never test it by scheduling the task to fire/, `${name}: the rule itself`);
+    assert.match(text, /cron schedule/, `${name}: say what a one-time fire costs`);
+    assert.match(text, /disables itself/, `${name}: and that the task does not come back on its own`);
+    // The test run is the task's own steps, done here and now.
+    assert.match(text, /in this session/, `${name}: inline is the only sanctioned test`);
+    assert.match(text, /sweep-done/, `${name}: the inline run covers the whole prompt, not just sync-plan`);
+  }
+});
+
+test('the skill tells an update never to carry a one-time fire time', () => {
+  assert.match(skill(), /Never pass `fireAt` on an update/);
+  assert.match(SIDEBAR_PASTE_BLOCK, /never pass `fireAt` on that update/);
+});
+
 test('sidebar-setup prints the paste block and nothing else', async () => {
   const out = await capture(() => commands['sidebar-setup']([]));
   assert.equal(out, SIDEBAR_PASTE_BLOCK);

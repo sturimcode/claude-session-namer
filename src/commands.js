@@ -366,6 +366,56 @@ async function syncPlan(argv) {
   }
 }
 
+// What `sync-plan` computes still has to be pushed, and the only writer the app trusts is its own
+// session-rename tool, held by an agent inside a desktop session. An hourly scheduled task is that
+// agent. The task registry is the app's own - it carries the cron line and the tool permissions the
+// user approved - so nothing here ever writes it. We hand over the instructions and the app creates
+// the routine, with the user's consent, through its own tooling.
+const SIDEBAR_TASK_ID = 'session-title-sidebar-sync';
+// Hourly, off the top of the hour: the app staggers scheduled starts anyway, and a minute nobody
+// else picks keeps this out of the crowd at :00.
+const SIDEBAR_TASK_CRON = '2 * * * *';
+
+// The invocation is the bare command name on purpose. ${CLAUDE_PLUGIN_ROOT} resolves only in plugin
+// components - hook and monitor commands, MCP and LSP config, and the plugin's own skill content -
+// and a scheduled task's prompt is none of those: it lives in the app's task store, where the
+// placeholder would reach the Bash tool as an unset shell variable and run `node "/bin/cli.js"`.
+// The bare name covers both install paths instead. npm puts it on the shell PATH; an enabled
+// plugin's bin/ is on the Bash tool's PATH in any session, and a scheduled run is an ordinary local
+// session, so the plugin's own wrapper answers there.
+const SIDEBAR_TASK_PROMPT = `Sync claude-session-namer titles into the Claude Code desktop sidebar.
+
+1. Run \`claude-session-namer sync-plan\` (do NOT pass \`--all\` - user-renamed sessions must stay excluded). If the command is not found, stop and say so: it is on this session's Bash PATH only while the plugin is enabled for this folder, or when the npm package is installed globally. Do not guess at a path.
+2. The output is JSON lines, each {"sessionId", "currentTitle", "newTitle"}. Empty output means nothing to do - finish silently.
+3. For each line in order, call the app's session-rename tool (set_session_title) with that sessionId and newTitle.
+4. Stop immediately on the first error - no retries, no continuing. Report what failed.
+
+Never write files, never modify state, never run backfill or any other command. Only the read-only sync-plan and the rename calls.`;
+
+// The paste path, for an install with no plugin to carry the skill. It is one message to a desktop
+// session: the same creation step the skill runs, condensed to what the assistant needs.
+const SIDEBAR_PASTE_BLOCK = `Set up the claude-session-namer sidebar sync. Using this app's own scheduled-task tool, create a scheduled task with the id \`${SIDEBAR_TASK_ID}\`, running hourly on the cron schedule \`${SIDEBAR_TASK_CRON}\`. List the existing scheduled tasks first: if one already carries that id, update it rather than adding a second. The task prompt must be exactly this:
+
+${SIDEBAR_TASK_PROMPT}
+`;
+
+// Printed by install only when the user says they use the desktop app.
+const SIDEBAR_POINTER = `
+The desktop app's sidebar reads the app's own registry, not the transcript, so the titles this tool writes reach the CLI but not the sidebar. An hourly scheduled task in the app closes that gap.
+Plugin install: run /claude-session-namer:setup-sidebar-sync in a desktop session.
+npm install: paste the block below into a desktop session. 'claude-session-namer sidebar-setup' prints it again.
+
+${SIDEBAR_PASTE_BLOCK}`;
+
+// Unconditional - no terminal check, no platform check. A user who asks for the block wants the
+// block, and it is as pasteable through a pipe as it is off a screen.
+async function sidebarSetup(argv) {
+  if (argv.length) {
+    return usage(`Unknown option${argv.length > 1 ? 's' : ''}: ${argv.join(', ')}\nUsage: claude-session-namer sidebar-setup\n`);
+  }
+  process.stdout.write(SIDEBAR_PASTE_BLOCK);
+}
+
 async function config(argv) {
   if (argv.length === 0) {
     process.stdout.write(`prefix: ${stateMod.loadConfig().prefix ? 'on' : 'off'}\n`);
@@ -383,4 +433,9 @@ async function config(argv) {
 }
 
 // The CLI dispatches on the command name, so the hyphenated key is the one that matters.
-module.exports = { backfill, rename, protect, unprotect, list, search, sessions, config, 'sync-plan': syncPlan };
+module.exports = {
+  backfill, rename, protect, unprotect, list, search, sessions, config,
+  'sync-plan': syncPlan,
+  'sidebar-setup': sidebarSetup,
+  SIDEBAR_TASK_PROMPT, SIDEBAR_PASTE_BLOCK, SIDEBAR_POINTER,
+};

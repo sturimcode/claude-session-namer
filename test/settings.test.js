@@ -582,3 +582,67 @@ test('an install that aborts never reaches the probe', () => {
   assert.equal(rejected.calls.length, 0, 'a rejected flag is not an install either');
   process.exitCode = prevExit;
 });
+
+// The desktop sidebar needs a scheduled task the user has to create in the app, and install is the
+// one moment they are looking at this tool. The question is the whole of the onboarding: it asks,
+// and on a yes it points. It never creates anything, and it never speaks unless spoken to.
+const DESKTOP_QUESTION = 'Do you use the Claude Code desktop app? [y/N] ';
+
+// The prompt seam, same shape as the spawn seam: a function that answers the question. Records what
+// it was asked so a test can pin the wording and the ordering.
+function fakeAsk(answer) {
+  const asked = [];
+  const fn = (question) => { asked.push(question); return answer; };
+  fn.asked = asked;
+  return fn;
+}
+
+test('install asks about the desktop app and points a yes at the sidebar setup', () => {
+  const { settings } = fresh();
+  const ask = fakeAsk('y');
+  const { out, err } = captureBoth(() => settings.install([], { spawn: probeOk(), ask }));
+  assert.deepEqual(ask.asked, [DESKTOP_QUESTION]);
+  assert.equal(err, '');
+  assert.match(out, /^Installed\./, 'the install output leads, as it always did');
+  assert.match(out, /setup-sidebar-sync/, 'plugin users invoke the bundled skill');
+  assert.match(out, /session-title-sidebar-sync/, 'npm users get the block to paste');
+  assert.match(out, /sync-plan/);
+  assert.ok(out.indexOf('Installed.') < out.indexOf('setup-sidebar-sync'), 'the pointer comes after the success line');
+});
+
+test('install takes a yes in any case, with whatever whitespace the terminal sent', () => {
+  for (const answer of ['Y', ' y \n', 'y\r\n']) {
+    const { settings } = fresh();
+    const { out } = captureBoth(() => settings.install([], { spawn: probeOk(), ask: fakeAsk(answer) }));
+    assert.match(out, /session-title-sidebar-sync/, `"${answer}" is a yes`);
+  }
+});
+
+test('anything but a yes leaves the install output exactly as it was', () => {
+  for (const answer of ['n', 'N', '', '\n', 'later', null]) {
+    const { settings } = fresh();
+    const { out, err } = captureBoth(() => settings.install([], { spawn: probeOk(), ask: fakeAsk(answer) }));
+    assert.equal(err, '');
+    assert.ok(!/sidebar/i.test(out), `"${answer}" must print nothing extra`);
+    assert.match(out, /^Installed\./);
+  }
+});
+
+// A scripted or piped install has nobody to answer, so the real reader returns null without writing
+// the question - the seam is not what decides that, the terminal is. Tests run with stdin piped,
+// which is why no ask is injected here.
+test('the question is skipped outright when stdin is not a terminal', () => {
+  const { settings } = fresh();
+  const { out, err } = captureBoth(() => settings.install([], { spawn: probeOk() }));
+  assert.ok(!/desktop app\?/.test(out), 'a non-interactive install must not ask');
+  assert.ok(!/sidebar/i.test(out));
+  assert.equal(err, '');
+  assert.match(out, /^Installed\./);
+});
+
+test('the question comes after the auth probe, so a warning is not buried under it', () => {
+  const { settings } = fresh();
+  const spawn = probeOk();
+  const ask = (q) => { assert.equal(spawn.calls.length, 1, 'the probe has already run by the time we ask'); return 'n'; };
+  captureBoth(() => settings.install([], { spawn, ask }));
+});

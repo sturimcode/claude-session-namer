@@ -202,7 +202,41 @@ function probeWarning(reason, detail, fix) {
   ].join('\n');
 }
 
-// testOpts carries the spawn seam only, the way backfill takes a runner - nothing else may set it.
+const DESKTOP_QUESTION = 'Do you use the Claude Code desktop app? [y/N] ';
+
+// Atomics.wait is Node's only synchronous sleep, and the read below is synchronous by necessity -
+// install has already finished its work by then and has nothing to await on.
+const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+// Only a terminal gets asked. A scripted or piped install has nobody to answer, and a blind read
+// there would either block on the pipe or swallow input meant for something else - so it returns
+// null without printing the question, and install stays byte-identical to what it was. Any failure
+// reading the answer is the same null: this is a pointer to an optional extra, never worth a crash
+// on an install that already succeeded.
+function askTty(question) {
+  if (!process.stdin.isTTY) return null;
+  process.stdout.write(question);
+  const buf = Buffer.alloc(256);
+  let line = '';
+  for (;;) {
+    let n;
+    try {
+      n = fs.readSync(0, buf, 0, buf.length, null);
+    } catch (err) {
+      // A terminal stdin is commonly non-blocking, where readSync throws EAGAIN until the user has
+      // typed something. Pause and retry rather than spin; anything else is an unreadable stdin.
+      if (err && err.code === 'EAGAIN') { sleepSync(50); continue; }
+      return null;
+    }
+    if (n === 0) return line; // EOF - the user closed stdin instead of answering
+    line += buf.toString('utf8', 0, n);
+    const nl = line.indexOf('\n');
+    if (nl >= 0) return line.slice(0, nl);
+  }
+}
+
+// testOpts carries the process-boundary seams only - the probe's spawn and the question's reader,
+// the way backfill takes a runner. Nothing else may set it.
 function install(argv = [], testOpts = {}) {
   // A typo'd flag must not read as a plain install - the user would think --no-prefix took effect.
   const unknown = argv.filter((a) => a !== '--no-prefix');
@@ -229,6 +263,14 @@ function install(argv = [], testOpts = {}) {
   // an already-broken titling path visible.
   const warning = probe(testOpts.spawn);
   if (warning) process.stderr.write(warning);
+
+  // The sidebar takes a scheduled task that only the desktop app can create, so the most this
+  // install can do is point at the setup. It asks first, and after the probe: most installs are
+  // CLI-only, and a no has to leave the output the way it was before the question existed.
+  const answer = (testOpts.ask || askTty)(DESKTOP_QUESTION);
+  if (typeof answer === 'string' && answer.trim().toLowerCase() === 'y') {
+    process.stdout.write(require('./commands').SIDEBAR_POINTER);
+  }
 }
 
 function uninstall() {

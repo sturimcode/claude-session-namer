@@ -66,9 +66,20 @@ test('the cli is on PATH for plugin installs under its own name', () => {
   assert.ok(fs.readFileSync(wrapper, 'utf8').includes('cli.js'));
 });
 
+test('the bundled skill sits in the directory a plugin scans by default', () => {
+  assert.ok(fs.existsSync(path.join(root, 'skills', 'setup-sidebar-sync', 'SKILL.md')));
+  // The skills/ directory at the plugin root is always scanned, so no manifest field declares it.
+  // Adding one would be worse than redundant here: for a marketplace entry whose source resolves to
+  // the marketplace root - ours is './' - declared skill directories replace the default scan
+  // instead of adding to it, so a partial list would silently drop the rest.
+  assert.equal('skills' in readJson('.claude-plugin/plugin.json'), false);
+  assert.ok(!fs.existsSync(path.join(root, '.claude-plugin', 'skills')), 'skills/ lives at the plugin root, not under .claude-plugin/');
+});
+
 test('nothing the plugin adds reaches the npm tarball', () => {
   // "files" is a whitelist, and it names bin/cli.js rather than bin/ so that the PATH wrapper - which
   // exists only for plugin installs, where npm's own bin mapping is not there to do the job - stays
-  // out of the package too. npm users pay nothing at all for the plugin wrapper.
+  // out of the package too. skills/ is left out for the same reason: an npm user has no plugin to
+  // load it, and `claude-session-namer sidebar-setup` prints what the skill would have told them.
   assert.deepEqual(pkg.files, ['bin/cli.js', 'src', 'LICENSE']);
 });

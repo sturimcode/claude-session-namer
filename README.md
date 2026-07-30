@@ -71,6 +71,16 @@ Uninstall removes the hook entry and the wrapper. Titles already written stay.
 
 Either way, state lives in `~/.claude/claude-session-namer` - titles the tool has claimed, the sessions you protected, your prefix setting. Switching from one install method to the other keeps all of it.
 
+### Desktop app sidebar setup
+
+Titles reach the CLI on their own. The desktop app's sidebar reads the app's own registry instead of the transcript, so it takes one more piece: an hourly scheduled task inside the app that runs `sync-plan` and applies each line through the app's rename tool. Optional, and only worth setting up if you use the desktop app on macOS.
+
+**Plugin install:** run `/claude-session-namer:setup-sidebar-sync` in a desktop session. The bundled skill says what the routine does, asks before it creates anything, and updates the task instead of adding a second one if you run it again.
+
+**npm install:** `install` asks whether you use the desktop app, and prints a prompt to paste into a desktop session if you say yes. `claude-session-namer sidebar-setup` prints the same prompt whenever you want it.
+
+Either way the scheduled task is the app's, not this tool's. Its registry holds the schedule and the tool permissions you approve for the run, so the app is what creates it - all we supply is the instructions.
+
 ## Commands
 
 ```
@@ -86,6 +96,8 @@ list [--project <path>]              List recent sessions with titles
 search <query>                       Find sessions by title or content
 config [prefix on|off]               Show or change settings
 sync-plan [--all]                    Print the titles the app sidebar is missing
+sidebar-setup                        Print the prompt that sets up hourly
+                                     sidebar syncing in the desktop app
 ```
 
 Preview a backfill before running it:
@@ -143,6 +155,8 @@ $ claude-session-namer sync-plan
 `currentTitle` is null when the app has no name for the session yet.
 
 The command writes nothing - not to the app, not to your transcripts. Applying the plan takes something that can call the app's session-rename API: a scheduled Claude session, or any agent with that tool, fed this output. Nothing to push means no output.
+
+[Desktop app sidebar setup](#desktop-app-sidebar-setup) above is the ready-made version of that: an hourly task in the app runs this command and pushes each line. Set it up with the bundled skill on a plugin install, or with the prompt `claude-session-namer sidebar-setup` prints on an npm install.
 
 Sessions you renamed in the app yourself are left out. `--all` puts them back in the printed plan, but pushing them is a dead end: the app refuses an agent rename of a session you titled yourself. The call reports success and the name stays yours (verified live, July 2026 - the rename tool's response text now says outright that user titles are kept). The only writer the app trusts for those sessions is you, in the UI, so `--all` shows you that diff without being able to apply it. It also does not help with the opposite case, where the app is showing a good name and the transcript is still on a vague one - there is no diff to push there, and `rename <session-id> "title"` is the fix.
 

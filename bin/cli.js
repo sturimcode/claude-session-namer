@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config', 'sync-plan'];
+const commands = ['install', 'uninstall', 'hook', 'worker', 'backfill', 'rename', 'protect', 'unprotect', 'list', 'search', 'config', 'sync-plan', 'sidebar-setup'];
 const cmd = process.argv[2];
 
 const help = `claude-session-namer - auto-title Claude Code sessions
@@ -20,6 +20,9 @@ Usage: claude-session-namer <command>
   config      Show or change settings: config [prefix on|off]
   sync-plan   Print the titles the desktop app's sidebar is missing, as JSON
               lines for an agent to push through the app (--all)
+  sidebar-setup
+              Print the prompt that sets up hourly sidebar syncing, to paste
+              into a Claude Code desktop session
 `;
 
 async function main() {

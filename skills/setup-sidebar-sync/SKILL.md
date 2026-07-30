@@ -47,10 +47,23 @@ Take no actions beyond these: sync-plan, sweep-done, the per-session rename call
 
 The task's working folder needs claude-session-namer reachable from a Bash call: any folder for an npm install, and a folder where this plugin is enabled otherwise.
 
-## 5. Say what to expect
+## 5. Pre-approve the permissions
+
+Run-time prompt approvals do not reliably persist for the app's own tools, so offer - and with the user's consent, make - the durable version: add these rules to the `permissions.allow` array in `~/.claude/settings.json` (read the file first, merge, never replace other entries):
+
+```
+"Bash(claude-session-namer sync-plan:*)"
+"Bash(claude-session-namer sweep-done:*)"
+"mcp__ccd_session_mgmt__set_session_title"
+"mcp__ccd_session_mgmt__archive_session"
+```
+
+Say what each one is for in a line: the two commands the routine runs, the app's rename tool that pushes titles, and the archive tool the cleanup step uses. If the user declines, that is fine - the routine still works, it just pauses on a prompt whenever an approval has not stuck.
+
+## 6. Say what to expect
 
 Keep it to a few lines:
 
 - The task runs only while the desktop app is open and the machine is awake. A missed hour is skipped, and the next run picks up everything outstanding anyway.
-- Offer to run it once now. The first run is where permission prompts appear, and approving them as always-allow is what keeps later runs from stalling on them.
+- Offer to run it once now, whether or not the rules were added - the first run proves the whole path end to end while the user is still watching.
 - Sessions the user renamed in the app are left out of every sync. The app refuses an agent rename of those, so pushing them is not possible and not attempted.
